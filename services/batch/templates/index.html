@@ -475,6 +475,11 @@
         </div>
       </div>
 
+      <div class="input-group">
+        <label for="llm-api-key">金鑰 (可留空)</label>
+        <input type="password" id="llm-api-key" autocomplete="off" placeholder="本機模型通常不需要" onchange="rememberLLM()" />
+      </div>
+
       <div class="input-group" id="llm-model-group">
         <label for="llm-model">語言模型</label>
         <select id="llm-model" onchange="rememberLLM()"></select>
@@ -848,9 +853,7 @@ btnGo.onclick=async()=>{
         const response = await fetch('/api/llm', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text, action, custom_prompt: customPrompt,
-                                 model: document.getElementById('llm-model').value || undefined,
-                                 api_url: document.getElementById('llm-api-url').value.trim() || undefined })
+          body: JSON.stringify({ text, action, custom_prompt: customPrompt, ...llmChoice() })
         });
 
         if (!response.ok) {
@@ -925,15 +928,31 @@ btnGo.onclick=async()=>{
     // a browser that has never been told otherwise.
     const LLM_URL_KEY = 'breeze.llm.api_url';
     const LLM_MODEL_KEY = 'breeze.llm.model';
+    const LLM_KEY_KEY = 'breeze.llm.api_key';
 
     const shortModelName = id => (id && id.includes('/')) ? id.split('/').pop() : (id || '');
+
+    // What to send with every LLM request. Empty fields are omitted so the
+    // server falls back to its own configuration.
+    function llmChoice() {
+      const out = {};
+      const url = document.getElementById('llm-api-url').value.trim();
+      const key = document.getElementById('llm-api-key').value;
+      const model = document.getElementById('llm-model').value;
+      if (url) out.api_url = url;
+      if (key) out.api_key = key;
+      if (model) out.model = model;
+      return out;
+    }
 
     function rememberLLM() {
       const url = document.getElementById('llm-api-url').value.trim();
       const model = document.getElementById('llm-model').value;
+      const key = document.getElementById('llm-api-key').value;
       try {
-        if (url) localStorage.setItem(LLM_URL_KEY, url); else localStorage.removeItem(LLM_URL_KEY);
-        if (model) localStorage.setItem(LLM_MODEL_KEY, model); else localStorage.removeItem(LLM_MODEL_KEY);
+        url ? localStorage.setItem(LLM_URL_KEY, url) : localStorage.removeItem(LLM_URL_KEY);
+        model ? localStorage.setItem(LLM_MODEL_KEY, model) : localStorage.removeItem(LLM_MODEL_KEY);
+        key ? localStorage.setItem(LLM_KEY_KEY, key) : localStorage.removeItem(LLM_KEY_KEY);
       } catch (e) { /* private browsing -- the choice just will not persist */ }
     }
 
@@ -945,16 +964,17 @@ btnGo.onclick=async()=>{
       const hint = document.getElementById('llm-model-hint');
       const urlEl = document.getElementById('llm-api-url');
 
-      const url = urlEl.value.trim();
       let remembered = '';
       try { remembered = localStorage.getItem(LLM_MODEL_KEY) || ''; } catch (e) {}
 
       hint.textContent = '查詢中...';
       try {
-        const qs = new URLSearchParams();
-        if (url) qs.set('api_url', url);
-        if (remembered) qs.set('model', remembered);
-        const r = await fetch('/api/llm/models?' + qs.toString());
+        // POST, not GET: the key must not travel in a query string.
+        const r = await fetch('/api/llm/models', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...llmChoice(), model: remembered })
+        });
         const j = await r.json();
 
         // Show the address actually used, so a blank box fills in with the
@@ -984,8 +1004,8 @@ btnGo.onclick=async()=>{
           sel.appendChild(o);
           sel.disabled = true;
           llmDot.className = 'dot yellow';
-          llmStatus.textContent = `LLM: ${j.api_url || url || ''} (Offline)`;
-          hint.textContent = j.error || '連不上這個位址，請確認服務已啟動。';
+          llmStatus.textContent = `LLM: ${j.api_url || ''} (Offline)`;
+          hint.textContent = j.error || '連不上這個位址，請確認服務已啟動；若需要金鑰請填入。';
         }
       } catch (e) {
         sel.innerHTML = '';
@@ -999,8 +1019,10 @@ btnGo.onclick=async()=>{
     async function checkLLMHealth() {
       // Restore the user's choice before the first query.
       try {
-        const saved = localStorage.getItem(LLM_URL_KEY);
-        if (saved) document.getElementById('llm-api-url').value = saved;
+        const savedUrl = localStorage.getItem(LLM_URL_KEY);
+        const savedKey = localStorage.getItem(LLM_KEY_KEY);
+        if (savedUrl) document.getElementById('llm-api-url').value = savedUrl;
+        if (savedKey) document.getElementById('llm-api-key').value = savedKey;
       } catch (e) {}
       await reloadLLM();
     }

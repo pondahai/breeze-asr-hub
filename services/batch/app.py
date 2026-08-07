@@ -502,7 +502,13 @@ def resolve_llm_url(requested=''):
     return requested
 
 
-def llm_server_models(api_url=None):
+def llm_auth_headers(api_key=''):
+    """Bearer header for endpoints that want one. Empty key -> no header."""
+    api_key = (api_key or '').strip() or config.LLM_API_KEY
+    return {'Authorization': f'Bearer {api_key}'} if api_key else {}
+
+
+def llm_server_models(api_url=None, api_key=''):
     """Ask an LLM server what it serves. [] when it is unreachable.
 
     The list is whatever that server reports -- llama.cpp, vLLM, Ollama's
@@ -510,7 +516,7 @@ def llm_server_models(api_url=None):
     """
     url = api_url or LLM_API_URL
     try:
-        r = requests.get(f"{url}/v1/models", timeout=5)
+        r = requests.get(f"{url}/v1/models", timeout=5, headers=llm_auth_headers(api_key))
         if r.status_code == 200:
             return [m.get('id') for m in r.json().get('data', []) if m.get('id')]
     except Exception:
@@ -535,16 +541,22 @@ def resolve_llm_model(requested='', api_url=None, served=None):
     return served[0] if served else ''
 
 
-@app.get('/api/llm/models')
+@app.post('/api/llm/models')
 def llm_models():
-    """Models a given LLM server currently offers. ?api_url= overrides .env."""
+    """Models a given LLM server currently offers.
+
+    POST rather than GET because the request may carry an API key, and a key in
+    a query string ends up in access logs, proxy logs and browser history. The
+    key is never echoed back in the response.
+    """
+    data = request.get_json(silent=True) or {}
     try:
-        url = resolve_llm_url(request.args.get('api_url', ''))
+        url = resolve_llm_url(data.get('api_url', ''))
     except ValueError as exc:
         return jsonify({'ok': False, 'error': str(exc), 'models': []}), 400
 
-    served = llm_server_models(url)
-    wanted = (request.args.get('model', '') or '').strip()
+    served = llm_server_models(url, data.get('api_key', ''))
+    wanted = (data.get('model', '') or '').strip()
     resolved = resolve_llm_model(wanted, url, served)
     return jsonify({
         'ok': bool(served),
@@ -569,7 +581,9 @@ def llm_process():
         api_url = resolve_llm_url(data.get('api_url', ''))
     except ValueError as exc:
         return jsonify({'ok': False, 'error': str(exc)}), 400
-    model = resolve_llm_model(data.get('model', ''), api_url)
+    api_key = data.get('api_key', '')
+    model = resolve_llm_model(data.get('model', ''), api_url,
+                              llm_server_models(api_url, api_key))
 
     if not text:
         return jsonify({'ok': False, 'error': '文字內容不可為空'}), 400
@@ -593,7 +607,7 @@ def llm_process():
     if not model:
         return jsonify({'ok': False, 'error':
                         f'LLM 伺服器沒有回報任何模型（{api_url}）。'
-                        '請確認位址正確且服務已啟動。'}), 503
+                        '請確認位址正確、服務已啟動，若需要金鑰請填入。'}), 503
 
     payload = {
         "model": model,
@@ -604,7 +618,8 @@ def llm_process():
     
     def generate():
         try:
-            r = requests.post(f"{api_url}/v1/chat/completions", json=payload, stream=True, timeout=600)
+            r = requests.post(f"{api_url}/v1/chat/completions", json=payload, stream=True,
+                              timeout=600, headers=llm_auth_headers(api_key))
             if r.status_code != 200:
                 yield f"data: {json.dumps({'error': f'LLM 伺服器回應 {r.status_code}: ' + r.text[:300]}, ensure_ascii=False)}\n\n"
                 return
