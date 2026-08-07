@@ -1,0 +1,15 @@
+# Build-time only -- needed by scripts/convert_model.sh to turn a Hugging Face
+# Whisper checkpoint into a whisper.cpp ggml model. The services never import
+# any of this, so do not install it on the machine that serves inference.
+#
+# Conversion is a desktop job: it wants several GB of RAM and disk. Converting
+# elsewhere and copying the .bin over with scripts/fetch_model.sh is fine, and
+# on a Jetson it is the sane path -- PyPI has no torch wheel for JetPack, so
+# `pip install torch` there either fails or silently installs a CPU build that
+# does not match the CUDA runtime. Use NVIDIA's wheel if you must convert
+# on-device.
+
+torch>=1.10
+transformers>=4.26
+huggingface_hub>=0.20
+numpy>=1.20

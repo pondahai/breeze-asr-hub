@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
 # Put a Breeze ASR ggml model in place.
 #
-# Deliberately does not hard-code a download URL. The `ggml-breeze-asr-26.bin`
-# in use on the reference machine was converted locally, and inventing a
-# plausible-looking Hugging Face link that 404s is worse than saying so. Set
-# MODEL_URL in .env, or pass a local path:
+# Deliberately does not hard-code a download URL: nobody publishes a ready-made
+# ggml build of Breeze ASR, and inventing a plausible-looking Hugging Face link
+# that 404s is worse than saying so. Three ways to get one:
 #
-#     scripts/fetch_model.sh /path/to/ggml-breeze-asr-26.bin
+#     scripts/fetch_model.sh /path/to/ggml-breeze-asr-26.bin   local file
+#     MODEL_URL= in .env, then scripts/fetch_model.sh          your own mirror
+#     scripts/fetch_model.sh --convert                         build from HF
+#
+# --convert hands off to scripts/convert_model.sh, which downloads the upstream
+# checkpoint and converts it. That needs torch and a few GB of scratch space,
+# which is why it is opt-in rather than the default.
 
 set -euo pipefail
 
@@ -21,6 +26,39 @@ esac
 MODEL_URL="${MODEL_URL:-}"
 MODEL_SHA256="${MODEL_SHA256:-}"
 SOURCE="${1:-}"
+
+usage() {
+  cat <<EOF
+Usage: scripts/fetch_model.sh [PATH | --convert [ARGS...] | --help]
+
+  PATH        copy an existing ggml model into place
+  --convert   build one from the upstream Hugging Face checkpoint
+              (remaining arguments are passed to scripts/convert_model.sh)
+  --help      show this message
+
+With no arguments, uses MODEL_URL from .env if set, or reports what is
+missing. The model lands at MODEL_PATH:
+
+  ${MODEL_PATH}
+EOF
+}
+
+case "${SOURCE}" in
+  --convert)
+    shift
+    exec bash "${REPO_ROOT}/scripts/convert_model.sh" "$@"
+    ;;
+  -h|--help)
+    usage
+    exit 0
+    ;;
+  -*)
+    echo "unknown option: ${SOURCE}" >&2
+    echo >&2
+    usage >&2
+    exit 2
+    ;;
+esac
 
 mkdir -p "$(dirname "${MODEL_PATH}")"
 
@@ -69,6 +107,12 @@ No model available and no source given.
 Provide one of:
   1. a local file   ->  scripts/fetch_model.sh /path/to/ggml-breeze-asr-26.bin
   2. a download URL ->  set MODEL_URL= in .env, then re-run
+  3. build your own ->  scripts/fetch_model.sh --convert
+
+Option 3 downloads ${MODEL_HF_REPO:-MediaTek-Research/Breeze-ASR-25} from Hugging Face and converts
+it to ggml. It needs torch, transformers and a few GB of scratch space (see
+requirements-convert.txt), and it does not have to run on this machine -- build
+the .bin anywhere and come back to option 1.
 
 Any whisper.cpp-compatible ggml model works; Breeze ASR is simply the one tuned
 for Taiwanese-accented Mandarin. For a quick smoke test you can point MODEL_PATH

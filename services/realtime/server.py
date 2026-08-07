@@ -82,6 +82,29 @@ def set_status(status):
 # ASR worker
 # --------------------------------------------------------------------------
 
+# Which Breeze variant the next utterance will go through. Switchable while the
+# service runs -- whisper-cli is spawned per utterance, so a change costs
+# nothing and takes effect on the next one.
+_model_lock = threading.Lock()
+_current_variant = config.MODEL_VARIANT
+
+
+def current_model():
+    with _model_lock:
+        return _current_variant, config.model_path(_current_variant)
+
+
+def set_current_model(variant):
+    """Switch variants. Raises KeyError for an unknown name, IOError if absent."""
+    path = config.model_path(variant)
+    if not path.exists():
+        raise IOError("model not converted yet: {}".format(path))
+    global _current_variant
+    with _model_lock:
+        _current_variant = variant
+    return path
+
+
 def asr_worker():
     while True:
         item = asr_queue.get()
@@ -91,9 +114,10 @@ def asr_worker():
 
         set_status("TRANSCRIBING")
         started = time.time()
+        _, model = current_model()
         cmd = [
             str(config.WHISPER_CLI),
-            "-m", str(config.MODEL_PATH),
+            "-m", str(model),
             "-f", str(wav_path),
             "-l", config.ASR_LANGUAGE,
             "-t", str(config.ASR_THREADS),
@@ -277,6 +301,35 @@ class ConsoleHandler(BaseHTTPRequestHandler):
     def do_HEAD(self):
         self._send(200, "text/html; charset=utf-8")
 
+    def _json(self, code, payload):
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self._send(code, "application/json; charset=utf-8", body)
+
+    def do_POST(self):
+        path = self.path.split("?", 1)[0]
+
+        if path == "/api/model":
+            length = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(length) if length else b"{}"
+            try:
+                variant = str(json.loads(raw.decode("utf-8") or "{}").get("model", "")).strip()
+            except ValueError:
+                self._json(400, {"ok": False, "error": "malformed JSON"})
+                return
+            try:
+                path_ = set_current_model(variant)
+            except KeyError as exc:
+                # str() on a KeyError re-quotes the message; take the arg itself.
+                self._json(400, {"ok": False, "error": exc.args[0] if exc.args else "unknown model"})
+                return
+            except IOError as exc:
+                self._json(409, {"ok": False, "error": str(exc)})
+                return
+            self._json(200, {"ok": True, "model": variant, "path": str(path_)})
+
+        else:
+            self._send(404, "text/plain")
+
     def do_GET(self):
         path = self.path.split("?", 1)[0]
 
@@ -294,7 +347,16 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 "threshold": config.VAD_NOISE_THRESHOLD,
                 "sample_rate": config.SAMPLE_RATE,
                 "accelerator": config.HARDWARE.get("accelerator", "unknown"),
+                "model": current_model()[0],
+                "models": config.available_models(),
             }).encode("utf-8")
+            self._send(200, "application/json; charset=utf-8", body)
+
+        elif path == "/api/models":
+            body = json.dumps({
+                "current": current_model()[0],
+                "models": config.available_models(),
+            }, ensure_ascii=False).encode("utf-8")
             self._send(200, "application/json; charset=utf-8", body)
 
         elif path == "/api/transcriptions":
@@ -361,9 +423,10 @@ def ws_server():
 def main():
     config.ensure_dirs()
 
-    missing = [str(p) for p in (config.WHISPER_CLI, config.MODEL_PATH) if not p.exists()]
+    missing = [str(p) for p in (config.WHISPER_CLI, current_model()[1]) if not p.exists()]
     if missing:
-        sys.exit("Missing required files:\n  {}\nRun scripts/install.sh first.".format("\n  ".join(missing)))
+        sys.exit("Missing required files:\n  {}\nRun scripts/setup_engine.sh and "
+                 "scripts/fetch_model.sh --convert first.".format("\n  ".join(missing)))
 
     threading.Thread(target=asr_worker, daemon=True).start()
     threading.Thread(target=ws_server, daemon=True).start()
