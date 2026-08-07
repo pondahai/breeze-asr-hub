@@ -164,13 +164,16 @@ def run_whisperx_job(job_id, in_path, out_base, log_path, language, min_speakers
                 j['status'] = 'failed'
                 j['returncode'] = 1
 
-def process_job_thread(job_id, in_path, out_base, log_path, max_len, fmt):
+def process_job_thread(job_id, in_path, out_base, log_path, max_len, fmt, model_path=None):
     with lock:
         j = jobs.get(job_id)
-        
+
+    model = pathlib.Path(model_path) if model_path else MODEL
+
     try:
         with open(log_path, 'a', encoding='utf-8') as logf:
             logf.write(f"Analyzing audio: {in_path}\n")
+            logf.write(f"Model: {model.name}\n")
             logf.flush()
             
             # Use ensure_wav to convert to 16k mono wav for better processing
@@ -214,7 +217,7 @@ def process_job_thread(job_id, in_path, out_base, log_path, max_len, fmt):
             for idx, (seg_path, start_time) in enumerate(segments):
                 seg_out_base = f"{out_base}_{idx}" if len(segments) > 1 else str(out_base)
                 
-                cmd = [str(WHISPER), '-m', str(MODEL), '-f', str(seg_path), '-of', seg_out_base, '-nt']
+                cmd = [str(WHISPER), '-m', str(model), '-f', str(seg_path), '-of', seg_out_base, '-nt']
                 cmd.extend(['-l', 'zh', '-ml', str(max_len), '-sow'])
                 cmd.extend(['-et', '2.4', '-lpt', '-1.0'])
                 cmd.append('-otxt')
@@ -302,6 +305,15 @@ def get_system_capabilities():
             return jsonify(default_caps)
     return jsonify(default_caps)
 
+@app.get('/api/models')
+def list_models():
+    """Which Breeze variants are actually converted and usable right now."""
+    return jsonify({
+        'ok': True,
+        'default': config.MODEL_VARIANT,
+        'models': config.available_models(),
+    })
+
 @app.route('/')
 def index():
     return render_template('index.html')
@@ -337,8 +349,20 @@ def transcribe():
     min_speakers = int(min_speakers) if min_speakers and min_speakers.isdigit() else None
     max_speakers = int(max_speakers) if max_speakers and max_speakers.isdigit() else None
 
-    if not use_whisperx and (not WHISPER.exists() or not MODEL.exists()):
-        return jsonify({'ok': False, 'error': '尚未安裝模型，先執行: bash scripts/install.sh'}), 400
+    # Which Breeze model to use. Absent means the configured default, so older
+    # clients that never send the field keep working.
+    variant = request.form.get('model', '').strip()
+    try:
+        model = config.model_path(variant or None)
+    except KeyError:
+        return jsonify({'ok': False, 'error': '未知的模型: {} (可用: {})'.format(
+            variant, ', '.join(sorted(config.MODEL_VARIANTS)))}), 400
+
+    if not use_whisperx and not WHISPER.exists():
+        return jsonify({'ok': False, 'error': '尚未編譯引擎，先執行: scripts/setup_engine.sh'}), 400
+    if not use_whisperx and not model.exists():
+        return jsonify({'ok': False, 'error': '模型檔不存在: {}，先執行: scripts/fetch_model.sh --convert --variant {}'.format(
+            model.name, variant or config.MODEL_VARIANT)}), 400
 
     upload_id = request.form.get('upload_id')
     filename = request.form.get('filename')
@@ -388,16 +412,18 @@ def transcribe():
             'id': job_id, 'status': 'running', 'start_ts': time.time(), 'pid': None,
             'proc': None, 'input_path': str(in_path), 'output_base': str(out_base),
             'log_path': str(log_path), 'returncode': None, 'requested_format': fmt,
-            'type': 'whisperx' if use_whisperx else 'whisper-cli'
+            'type': 'whisperx' if use_whisperx else 'whisper-cli',
+            'model': None if use_whisperx else (variant or config.MODEL_VARIANT)
         }
-        
+
     if use_whisperx:
         t = threading.Thread(
             target=run_whisperx_job,
             args=(job_id, in_path, out_base, log_path, 'zh', min_speakers, max_speakers, hf_token)
         )
     else:
-        t = threading.Thread(target=process_job_thread, args=(job_id, in_path, out_base, log_path, max_len, fmt))
+        t = threading.Thread(target=process_job_thread,
+                             args=(job_id, in_path, out_base, log_path, max_len, fmt, str(model)))
     
     t.start()
 

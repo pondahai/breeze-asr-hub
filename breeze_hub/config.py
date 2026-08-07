@@ -91,12 +91,77 @@ def _path(key, default):
 # already have a system-wide build they would rather reuse.
 
 WHISPER_CLI = _path("WHISPER_CLI", HARDWARE.get("whisper_cli") or "engine/whisper.cpp/build/bin/whisper-cli")
-MODEL_PATH = _path("MODEL_PATH", "models/ggml-breeze-asr-26.bin")
+
+# --- Models -----------------------------------------------------------------
+# MediaTek publishes two Breeze ASR models tuned for different things, and which
+# one is "better" depends entirely on what is being said. Keep both and let the
+# caller choose per request -- whisper-cli is spawned per job, so switching
+# costs nothing but a different -m argument.
+#
+# Filenames deliberately match the upstream repo name. An earlier layout shipped
+# a single ggml-breeze-asr-26.bin that was fetched from whichever repo happened
+# to be configured, which made it impossible to tell what a given .bin actually
+# contained.
+
+MODEL_VARIANTS = {
+    "25": {
+        "repo": "MediaTek-Research/Breeze-ASR-25",
+        "filename": "ggml-breeze-asr-25.bin",
+        "summary": "Taiwanese Mandarin, plus Mandarin-English code-switching",
+    },
+    "26": {
+        "repo": "MediaTek-Research/Breeze-ASR-26",
+        "filename": "ggml-breeze-asr-26.bin",
+        "summary": "Taiwanese Hokkien (Taigi), transcribed as Chinese characters",
+    },
+}
+
+MODEL_DIR = _path("MODEL_DIR", "models")
+MODEL_VARIANT = _str("MODEL_VARIANT", "25")
+
+
+def model_path(variant=None):
+    """Path to a variant's .bin. Falls back to the default variant.
+
+    An explicit MODEL_PATH overrides the default variant only -- asking for a
+    named variant always resolves through MODEL_DIR, otherwise a machine that
+    pins MODEL_PATH could never reach the other model.
+    """
+    name = str(variant or MODEL_VARIANT)
+    if name not in MODEL_VARIANTS:
+        raise KeyError("unknown model variant: {} (have: {})".format(
+            name, ", ".join(sorted(MODEL_VARIANTS))))
+    if variant is None or name == MODEL_VARIANT:
+        override = _str("MODEL_PATH")
+        if override:
+            return _path("MODEL_PATH", override)
+    return MODEL_DIR / MODEL_VARIANTS[name]["filename"]
+
+
+def available_models():
+    """Variants whose .bin is actually on disk, for the UI to offer."""
+    found = []
+    for name in sorted(MODEL_VARIANTS):
+        path = MODEL_DIR / MODEL_VARIANTS[name]["filename"]
+        if name == MODEL_VARIANT:
+            path = model_path(name)
+        if path.exists():
+            found.append({
+                "variant": name,
+                "path": str(path),
+                "summary": MODEL_VARIANTS[name]["summary"],
+                "default": name == MODEL_VARIANT,
+            })
+    return found
+
+
+MODEL_PATH = model_path()
 MODEL_URL = _str("MODEL_URL")
 MODEL_SHA256 = _str("MODEL_SHA256")
 # Only read by scripts/convert_model.sh, which builds a ggml model from the
 # upstream checkpoint. Kept here so every setting still has one home.
-MODEL_HF_REPO = _str("MODEL_HF_REPO", "MediaTek-Research/Breeze-ASR-25")
+MODEL_HF_REPO = _str("MODEL_HF_REPO", MODEL_VARIANTS[MODEL_VARIANT]["repo"]
+                     if MODEL_VARIANT in MODEL_VARIANTS else "MediaTek-Research/Breeze-ASR-25")
 MODEL_HF_REVISION = _str("MODEL_HF_REVISION", "main")
 ASR_LANGUAGE = _str("ASR_LANGUAGE", "zh")
 ASR_THREADS = _int("ASR_THREADS", HARDWARE.get("cpu_cores") or 4)
@@ -172,6 +237,9 @@ def describe():
         "  repo root    : {}".format(REPO_ROOT),
         "  whisper-cli  : {} {}".format(WHISPER_CLI, "" if WHISPER_CLI.exists() else "(MISSING)"),
         "  model        : {} {}".format(MODEL_PATH, "" if MODEL_PATH.exists() else "(MISSING)"),
+        "  variants     : {}".format(
+            ", ".join("{}{}".format(m["variant"], " (default)" if m["default"] else "")
+                      for m in available_models()) or "none on disk"),
         "  accelerator  : {}".format(HARDWARE.get("accelerator", "unknown")),
         "  platform     : {}".format(HARDWARE.get("platform", "unknown")),
     ])

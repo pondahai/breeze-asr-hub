@@ -8,6 +8,8 @@
 # runtime install should be made to carry.
 #
 #   scripts/convert_model.sh                    convert MODEL_HF_REPO -> MODEL_PATH
+#   scripts/convert_model.sh --variant 25       Taiwanese Mandarin / code-switching
+#   scripts/convert_model.sh --variant 26       Taiwanese Hokkien (Taigi)
 #   scripts/convert_model.sh --repo openai/whisper-small
 #   scripts/convert_model.sh --src ./Breeze-ASR-25   use a checkout you already have
 #   scripts/convert_model.sh --quantize q5_0    shrink it for an edge device
@@ -36,13 +38,34 @@ KEEP_SRC=false
 FORCE=false
 USE_F32=false
 LOCAL_SRC=""
+VARIANT=""
+REPO_EXPLICIT=false
+OUT_EXPLICIT=false
+
+# Keep this table in step with MODEL_VARIANTS in breeze_hub/config.py -- the
+# services resolve a variant name to the same filename this writes.
+variant_repo() {
+  case "$1" in
+    25) echo "MediaTek-Research/Breeze-ASR-25" ;;
+    26) echo "MediaTek-Research/Breeze-ASR-26" ;;
+    *)  return 1 ;;
+  esac
+}
+variant_filename() {
+  case "$1" in
+    25) echo "models/ggml-breeze-asr-25.bin" ;;
+    26) echo "models/ggml-breeze-asr-26.bin" ;;
+    *)  return 1 ;;
+  esac
+}
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --repo) HF_REPO="${2:?--repo needs a value}"; shift 2 ;;
+    --variant) VARIANT="${2:?--variant needs a value, e.g. 25}"; shift 2 ;;
+    --repo) HF_REPO="${2:?--repo needs a value}"; REPO_EXPLICIT=true; shift 2 ;;
     --revision) HF_REVISION="${2:?--revision needs a value}"; shift 2 ;;
     --src) LOCAL_SRC="${2:?--src needs a path}"; shift 2 ;;
-    --out) MODEL_PATH="${2:?--out needs a value}"; shift 2 ;;
+    --out) MODEL_PATH="${2:?--out needs a value}"; OUT_EXPLICIT=true; shift 2 ;;
     --quantize) QUANTIZE="${2:?--quantize needs a type, e.g. q5_0}"; shift 2 ;;
     --keep-src) KEEP_SRC=true; shift ;;
     --force) FORCE=true; shift ;;
@@ -52,7 +75,16 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-MODEL_PATH="${MODEL_PATH:-models/ggml-breeze-asr-26.bin}"
+# --variant is shorthand for the matching --repo and --out, so that the file on
+# disk always says which upstream model it came from. Explicit flags still win.
+if [ -n "${VARIANT}" ]; then
+  VARIANT_REPO="$(variant_repo "${VARIANT}")" || {
+    echo "unknown --variant ${VARIANT} (known: 25, 26)" >&2; exit 1; }
+  [ "${REPO_EXPLICIT}" = true ] || HF_REPO="${VARIANT_REPO}"
+  [ "${OUT_EXPLICIT}" = true ] || MODEL_PATH="$(variant_filename "${VARIANT}")"
+fi
+
+MODEL_PATH="${MODEL_PATH:-models/ggml-breeze-asr-${MODEL_VARIANT:-25}.bin}"
 case "${MODEL_PATH}" in
   /*) ;;
   *) MODEL_PATH="${REPO_ROOT}/${MODEL_PATH}" ;;
