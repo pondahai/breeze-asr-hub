@@ -27,10 +27,38 @@ MODEL_URL="${MODEL_URL:-}"
 MODEL_SHA256="${MODEL_SHA256:-}"
 SOURCE="${1:-}"
 
-if [ "${SOURCE}" = "--convert" ]; then
-  shift
-  exec bash "${REPO_ROOT}/scripts/convert_model.sh" "$@"
-fi
+usage() {
+  cat <<EOF
+Usage: scripts/fetch_model.sh [PATH | --convert [ARGS...] | --help]
+
+  PATH        copy an existing ggml model into place
+  --convert   build one from the upstream Hugging Face checkpoint
+              (remaining arguments are passed to scripts/convert_model.sh)
+  --help      show this message
+
+With no arguments, uses MODEL_URL from .env if set, or reports what is
+missing. The model lands at MODEL_PATH:
+
+  ${MODEL_PATH}
+EOF
+}
+
+case "${SOURCE}" in
+  --convert)
+    shift
+    exec bash "${REPO_ROOT}/scripts/convert_model.sh" "$@"
+    ;;
+  -h|--help)
+    usage
+    exit 0
+    ;;
+  -*)
+    echo "unknown option: ${SOURCE}" >&2
+    echo >&2
+    usage >&2
+    exit 2
+    ;;
+esac
 
 mkdir -p "$(dirname "${MODEL_PATH}")"
 
