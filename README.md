@@ -12,10 +12,14 @@
 
 | 服務 | 埠 | 做什麼 |
 | --- | --- | --- |
-| **批次轉寫 WebUI** | `8013` | 長音檔上傳(分片 + 智慧靜音切割)、字幕輸出 (txt/srt/vtt)、選配 WhisperX 講者分離與 LLM 摘要 |
+| **批次轉寫 WebUI** | `8014` | 長音檔上傳(分片 + 智慧靜音切割)、字幕輸出 (txt/srt/vtt)、選配 WhisperX 講者分離與 LLM 摘要 |
 | **即時聽寫台** | `8015` (HTTP) / `8016` (WS) | 常駐背景 VAD 側錄、即時轉寫推送、10 fps 音壓計、低延遲監聽、選配 webcam 預覽 |
 
 兩者可以同時跑。在 Xavier 上實測雙 `whisper-cli` 併發推理 18.5 秒完成,沒有 OOM。
+
+批次服務用 `8014` 而非 `8013`,是為了讓姊妹專案
+[ggml-breeze-asr-26-webui](https://github.com/pondahai/ggml-breeze-asr-26-webui)(用 `8013`)
+能在同一台機器上並存。用 `.env` 的 `BATCH_PORT` 可以改。
 
 ---
 
@@ -91,8 +95,8 @@ scripts/convert_model.sh --keep-src                    # 保留下載內容供�
 `-m` 參數,沒有卸載/重載的成本。
 
 ```bash
-curl -F file=@meeting.wav -F model=25 localhost:8013/api/transcribe   # 批次:逐次指定
-curl localhost:8013/api/models                                        # 有哪幾顆可用
+curl -F file=@meeting.wav -F model=25 localhost:8014/api/transcribe   # 批次:逐次指定
+curl localhost:8014/api/models                                        # 有哪幾顆可用
 
 curl localhost:8015/api/models                                        # 即時台:目前用哪顆
 curl -X POST -d '{"model":"25"}' localhost:8015/api/model             # 下一段語音起生效
@@ -128,10 +132,10 @@ CUDA 13 的 aarch64 wheel,轉檔正常。)在桌機轉好之後把 `.bin` 複製
 
 ## 使用方法
 
-兩個服務都有網頁介面(批次 `http://<IP>:8013`、即時台 `http://<IP>:8015`),
+兩個服務都有網頁介面(批次 `http://<IP>:8014`、即時台 `http://<IP>:8015`),
 但都是純 HTTP,可以直接當 API 用。
 
-### 批次轉寫 API(`8013`)
+### 批次轉寫 API(`8014`)
 
 | 方法 | 路徑 | 說明 |
 | --- | --- | --- |
@@ -142,8 +146,36 @@ CUDA 13 的 aarch64 wheel,轉檔正常。)在桌機轉好之後把 `.bin` 複製
 | `POST` | `/api/upload_chunk` | 分片上傳(大檔用,見下) |
 | `GET` | `/api/models` | 有哪幾顆模型可用 |
 | `GET` | `/api/system/capabilities` | 本機探測到的能力 |
-| `POST` | `/api/llm` | 把逐字稿丟給下游 LLM 處理(需設定 `LLM_API_URL`) |
-| `GET` | `/api/llm/health` | 下游 LLM 是否活著 |
+| `POST` | `/api/llm` | 把逐字稿丟給下游 LLM 處理 |
+| `POST` | `/api/llm/models` | 某台 LLM 伺服器提供哪些模型 |
+| `GET` | `/api/llm/health` | 預設 LLM 位址是否活著 |
+
+#### AI 秘書的 LLM 設定
+
+用哪台 LLM、哪顆模型、要不要金鑰,是**使用者的偏好而非這台機器的屬性**,所以網頁上
+可以設定,並存在瀏覽器裡(`localStorage`),重新整理仍然保留。`.env` 的
+`LLM_API_URL` / `LLM_MODEL_NAME` / `LLM_API_KEY` 只是「這個瀏覽器沒設定過」時的起點。
+
+`/api/llm` 與 `/api/llm/models` 都接受三個選填欄位:
+
+| 欄位 | 說明 |
+| --- | --- |
+| `api_url` | LLM 伺服器位址。只接受 `http://` 或 `https://` |
+| `api_key` | 選填。空的就不送 `Authorization` 標頭 |
+| `model` | 模型 id。伺服器已經沒有這顆時會自動退回可用的那顆 |
+
+查詢模型走 **POST 而非 GET**,因為金鑰不該出現在 query string —— 那會被寫進伺服器
+access log、反向代理紀錄與瀏覽器歷史。回應中也不會回傳金鑰。
+
+```bash
+curl -X POST -H 'Content-Type: application/json' \
+     -d '{"api_url":"http://127.0.0.1:8002"}' \
+     localhost:8014/api/llm/models
+```
+
+這些查詢由本服務代為送出,而不是瀏覽器直連:區域網路上的 OpenAI 相容伺服器多半不送
+CORS 標頭,瀏覽器直連會在位址正確的情況下失敗,看起來像「位址填錯」,幾乎無從排查。
+**因此 `api_url` 是「從跑這個服務的機器看出去」的位址。**
 
 `POST /api/transcribe` 吃 multipart 表單:
 
@@ -163,13 +195,13 @@ CUDA 13 的 aarch64 wheel,轉檔正常。)在桌機轉好之後把 `.bin` 複製
 ```bash
 # 送出
 JOB=$(curl -sS -F file=@meeting.wav -F model=25 -F format=srt \
-        localhost:8013/api/transcribe | python3 -c 'import sys,json;print(json.load(sys.stdin)["job_id"])')
+        localhost:8014/api/transcribe | python3 -c 'import sys,json;print(json.load(sys.stdin)["job_id"])')
 
 # 輪詢直到 done(status 會是 running / done / failed / cancelled)
-until [ "$(curl -sS localhost:8013/api/jobs/$JOB | python3 -c 'import sys,json;print(json.load(sys.stdin)["status"])')" = done ]; do sleep 5; done
+until [ "$(curl -sS localhost:8014/api/jobs/$JOB | python3 -c 'import sys,json;print(json.load(sys.stdin)["status"])')" = done ]; do sleep 5; done
 
 # 取檔
-curl -sS -o meeting.srt "localhost:8013/api/jobs/$JOB/download?ext=srt"
+curl -sS -o meeting.srt "localhost:8014/api/jobs/$JOB/download?ext=srt"
 ```
 
 `GET /api/jobs/<job_id>` 回傳裡除了 `status` 與 `text`,還有 `model`(這份逐字稿是哪顆
@@ -260,7 +292,7 @@ breeze-asr-hub/
 │   ├── audio.py             麥克風挑選與 PCM 處理
 │   └── calibrate.py         python3 -m breeze_hub.calibrate
 ├── services/
-│   ├── batch/               批次轉寫 WebUI (Flask, 8013)
+│   ├── batch/               批次轉寫 WebUI (Flask, 8014)
 │   └── realtime/            即時聽寫台 (stdlib HTTP + websockets, 8015/8016)
 ├── scripts/
 │   ├── probe_hardware.sh    → hardware.json

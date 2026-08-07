@@ -484,13 +484,107 @@ def job_cancel(job_id):
                 
     return jsonify({'ok': True, 'status': 'cancelled'})
 
+def resolve_llm_url(requested=''):
+    """Which LLM server to talk to. The caller's choice wins over .env.
+
+    Which server to use is a user preference, not a property of this machine,
+    so the browser can name one per request. LLM_API_URL is only the default
+    for a browser that has never been told otherwise.
+    """
+    requested = (requested or '').strip().rstrip('/')
+    if not requested:
+        return LLM_API_URL
+    # The browser hands this to us and we then fetch it, so refuse anything
+    # that is not plain http(s) rather than letting requests try file:// and
+    # friends.
+    if not requested.startswith(('http://', 'https://')):
+        raise ValueError('API 位址必須以 http:// 或 https:// 開頭')
+    return requested
+
+
+def llm_auth_headers(api_key=''):
+    """Bearer header for endpoints that want one. Empty key -> no header."""
+    api_key = (api_key or '').strip() or config.LLM_API_KEY
+    return {'Authorization': f'Bearer {api_key}'} if api_key else {}
+
+
+def llm_server_models(api_url=None, api_key=''):
+    """Ask an LLM server what it serves. [] when it is unreachable.
+
+    The list is whatever that server reports -- llama.cpp, vLLM, Ollama's
+    OpenAI shim -- so it cannot be a fixed table the way ASR variants are.
+    """
+    url = api_url or LLM_API_URL
+    try:
+        r = requests.get(f"{url}/v1/models", timeout=5, headers=llm_auth_headers(api_key))
+        if r.status_code == 200:
+            return [m.get('id') for m in r.json().get('data', []) if m.get('id')]
+    except Exception:
+        pass
+    return []
+
+
+def resolve_llm_model(requested='', api_url=None, served=None):
+    """Pick the model id to send. Explicit > configured > whatever is served.
+
+    A model the caller remembered from a previous session may no longer exist
+    on the server it is now pointed at, so an explicit choice is only honoured
+    when the server still lists it.
+    """
+    requested = (requested or '').strip()
+    if served is None:
+        served = llm_server_models(api_url)
+    if requested and (not served or requested in served):
+        return requested
+    if config.LLM_MODEL_NAME and (not served or config.LLM_MODEL_NAME in served):
+        return config.LLM_MODEL_NAME
+    return served[0] if served else ''
+
+
+@app.post('/api/llm/models')
+def llm_models():
+    """Models a given LLM server currently offers.
+
+    POST rather than GET because the request may carry an API key, and a key in
+    a query string ends up in access logs, proxy logs and browser history. The
+    key is never echoed back in the response.
+    """
+    data = request.get_json(silent=True) or {}
+    try:
+        url = resolve_llm_url(data.get('api_url', ''))
+    except ValueError as exc:
+        return jsonify({'ok': False, 'error': str(exc), 'models': []}), 400
+
+    served = llm_server_models(url, data.get('api_key', ''))
+    wanted = (data.get('model', '') or '').strip()
+    resolved = resolve_llm_model(wanted, url, served)
+    return jsonify({
+        'ok': bool(served),
+        'models': served,
+        'default': resolved,
+        # Tells the browser its remembered model is gone and it fell back.
+        'fallback': bool(wanted and served and wanted not in served),
+        'configured': config.LLM_MODEL_NAME,
+        'api_url': url,
+        'default_api_url': LLM_API_URL,
+    })
+
+
 @app.post('/api/llm')
 def llm_process():
     data = request.get_json(force=True)
     text = data.get('text', '').strip()
     action = data.get('action', 'proofread')
     custom_prompt = data.get('custom_prompt', '').strip()
-    
+
+    try:
+        api_url = resolve_llm_url(data.get('api_url', ''))
+    except ValueError as exc:
+        return jsonify({'ok': False, 'error': str(exc)}), 400
+    api_key = data.get('api_key', '')
+    model = resolve_llm_model(data.get('model', ''), api_url,
+                              llm_server_models(api_url, api_key))
+
     if not text:
         return jsonify({'ok': False, 'error': '文字內容不可為空'}), 400
         
@@ -510,8 +604,13 @@ def llm_process():
         {"role": "user", "content": text}
     ]
     
+    if not model:
+        return jsonify({'ok': False, 'error':
+                        f'LLM 伺服器沒有回報任何模型（{api_url}）。'
+                        '請確認位址正確、服務已啟動，若需要金鑰請填入。'}), 503
+
     payload = {
-        "model": "gemma-4-e2b-it",
+        "model": model,
         "messages": messages,
         "temperature": 0.3,
         "stream": True
@@ -519,9 +618,10 @@ def llm_process():
     
     def generate():
         try:
-            r = requests.post(f"{LLM_API_URL}/v1/chat/completions", json=payload, stream=True, timeout=600)
+            r = requests.post(f"{api_url}/v1/chat/completions", json=payload, stream=True,
+                              timeout=600, headers=llm_auth_headers(api_key))
             if r.status_code != 200:
-                yield f"data: {json.dumps({'error': 'Llama server returned error: ' + r.text}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'error': f'LLM 伺服器回應 {r.status_code}: ' + r.text[:300]}, ensure_ascii=False)}\n\n"
                 return
             for line in r.iter_lines():
                 if line:
@@ -551,12 +651,16 @@ def llm_process():
 @app.route('/api/llm/health')
 def llm_health():
     try:
-        r = requests.get(f"{LLM_API_URL}/v1/models", timeout=3)
-        if r.status_code == 200:
-            return jsonify({'ok': True, 'status': 'online', 'model': 'gemma-4'})
-    except Exception as e:
-        pass
-    return jsonify({'ok': False, 'status': 'offline'})
+        url = resolve_llm_url(request.args.get('api_url', ''))
+    except ValueError as exc:
+        return jsonify({'ok': False, 'status': 'offline', 'error': str(exc)}), 400
+    served = llm_server_models(url)
+    if served:
+        # Report what is actually being served rather than a name baked in at
+        # write time -- this used to always say "gemma-4".
+        return jsonify({'ok': True, 'status': 'online', 'api_url': url,
+                        'model': resolve_llm_model('', url, served), 'models': served})
+    return jsonify({'ok': False, 'status': 'offline', 'api_url': url})
 
 if __name__ == '__main__':
     host, port = config.HOST, config.BATCH_PORT

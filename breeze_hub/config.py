@@ -171,7 +171,10 @@ ASR_THREADS = _int("ASR_THREADS", HARDWARE.get("cpu_cores") or 4)
 # --- Network ----------------------------------------------------------------
 
 HOST = _str("HOST", "0.0.0.0")
-BATCH_PORT = _int("BATCH_PORT", 8013)
+# 8014 rather than 8013: the sibling ggml-breeze-asr-26-webui serves on 8013 and
+# is the one already deployed on the reference machine, so the two could not run
+# side by side. This also keeps the project's own ports contiguous (8014-8016).
+BATCH_PORT = _int("BATCH_PORT", 8014)
 REALTIME_HTTP_PORT = _int("REALTIME_HTTP_PORT", 8015)
 REALTIME_WS_PORT = _int("REALTIME_WS_PORT", 8016)
 
@@ -218,6 +221,9 @@ WORK_DIR = _path("WORK_DIR", "var/tmp")
 WHISPERX_API_URL = _str("WHISPERX_API_URL", "http://127.0.0.1:8088")
 LLM_API_URL = _str("LLM_API_URL", "http://127.0.0.1:18082")
 LLM_MODEL_NAME = _str("LLM_MODEL_NAME", "")
+# Only a fallback for a browser that sends none. Local llama.cpp and vLLM
+# usually need no auth at all, which is why it is optional everywhere.
+LLM_API_KEY = _str("LLM_API_KEY", "")
 HF_TOKEN = _str("HF_TOKEN")
 
 FRAME_BYTES = int(SAMPLE_RATE * BYTES_PER_SAMPLE * FRAME_DURATION_SEC)

@@ -288,6 +288,39 @@
       color: #38bdf8;
     }
 
+    .output-rich table {
+      border-collapse: collapse;
+      width: 100%;
+      margin: 12px 0;
+      font-size: 13px;
+      /* Meeting minutes can carry wide columns; scroll the table rather than
+         letting it push the panel sideways. */
+      display: block;
+      overflow-x: auto;
+    }
+    .output-rich th, .output-rich td {
+      border: 1px solid var(--border);
+      padding: 8px 10px;
+      text-align: left;
+      vertical-align: top;
+    }
+    .output-rich th {
+      background: rgba(255, 255, 255, 0.05);
+      color: var(--accent-green);
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    .output-rich tbody tr:nth-child(even) {
+      background: rgba(255, 255, 255, 0.02);
+    }
+    .output-rich code {
+      background: rgba(0, 0, 0, 0.35);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 1px 5px;
+      font-size: 12px;
+    }
+
     pre.log-box {
       white-space: pre-wrap;
       background: rgba(0, 0, 0, 0.4);
@@ -349,7 +382,7 @@
     <div class="status-badge">
       <div class="badge">
         <div class="dot"></div>
-        <span>Breeze ASR: 8013 (Online)</span>
+        <span>Breeze ASR: 8014 (Online)</span>
       </div>
       <div class="badge">
         <div class="dot" id="llm-dot"></div>
@@ -410,6 +443,13 @@
       </div>
 
       <div class="row">
+        <div class="input-group" id="model-group" style="flex: 1; min-width: 160px; display:none;">
+          <label for="model">辨識模型</label>
+          <select id="model"></select>
+        </div>
+      </div>
+
+      <div class="row">
         <div class="input-group" style="flex: 1; min-width: 140px;">
           <label for="format">儲存格式</label>
           <select id="format">
@@ -458,8 +498,27 @@
 
     <!-- Right Column: AI Secretary Panel -->
     <div class="card" id="ai-panel">
-      <h2>🧠 AI 秘書自動整理 (Gemma-4 本地大模型)</h2>
-      
+      <h2>🧠 AI 秘書自動整理</h2>
+
+      <div class="input-group">
+        <label for="llm-api-url">LLM API 來源</label>
+        <div style="display:flex; gap:8px;">
+          <input type="text" id="llm-api-url" placeholder="http://127.0.0.1:8002" style="flex:1;" />
+          <button class="secondary" id="btn-llm-reload" onclick="reloadLLM()">🔄 連線</button>
+        </div>
+      </div>
+
+      <div class="input-group">
+        <label for="llm-api-key">金鑰 (可留空)</label>
+        <input type="password" id="llm-api-key" autocomplete="off" placeholder="本機模型通常不需要" onchange="rememberLLM()" />
+      </div>
+
+      <div class="input-group" id="llm-model-group">
+        <label for="llm-model">語言模型</label>
+        <select id="llm-model" onchange="rememberLLM()"></select>
+        <small id="llm-model-hint" style="color:var(--muted); font-size:11px;"></small>
+      </div>
+
       <div class="input-group">
         <label>快速整理指令</label>
         <div class="llm-grid">
@@ -570,10 +629,31 @@
       btnCancel.disabled=!b; 
     }
 
+// Only offer variants that are actually converted on this machine -- picking a
+// missing one would fail after the upload has already finished.
+(async()=>{
+  try{
+    const r = await fetch('/api/models');
+    const d = await r.json();
+    if(!d.ok || !d.models || d.models.length < 2) return;   // nothing to choose
+    const sel = document.getElementById('model');
+    d.models.forEach(m=>{
+      const o = document.createElement('option');
+      o.value = m.variant;
+      o.textContent = `Breeze ASR ${m.variant} — ${m.summary}`;
+      o.selected = m.default;
+      sel.appendChild(o);
+    });
+    document.getElementById('model-group').style.display = '';
+  }catch(e){ /* leave it hidden and let the server use its default */ }
+})();
+
 btnGo.onclick=async()=>{
   const f=document.getElementById('file').files[0];
   const fmt=document.getElementById('format').value;
   const maxLen=document.getElementById('max_len').value;
+  const modelGroup=document.getElementById('model-group');
+  const model=(modelGroup.style.display!=='none') ? document.getElementById('model').value : '';
   if(!f){alert('請先選音檔');return}
   
   statusCard.style.display = 'block';
@@ -631,6 +711,7 @@ btnGo.onclick=async()=>{
   fd2.append('upload_id', uploadId);
   fd2.append('filename', f.name);
   fd2.append('format', fmt);
+  if (model) fd2.append('model', model);
   fd2.append('max_len', maxLen);
   fd2.append('use_whisperx', useWhisperxEl.checked ? 'true' : 'false');
   if (useWhisperxEl.checked) {
@@ -707,16 +788,63 @@ btnGo.onclick=async()=>{
     };
 
     // LLM Markdown parsing
+    // Inline formatting shared by ordinary text and table cells.
+    function mdInline(s) {
+      return s.replace(/\*\*([^\*]+)\*\*/g, '<strong>$1</strong>')
+              .replace(/`([^`]+)`/g, '<code>$1</code>');
+    }
+
+    // Pipe tables, GitHub style: a header row, a |---|---| separator, then
+    // body rows. Handled before anything else, because the line-based rules
+    // below (and the newline-to-<br> pass) would otherwise shred them -- which
+    // is why tables used to come out as raw pipes. The "minutes" prompt asks
+    // for markdown, so the model produces these routinely.
+    function mdTables(text) {
+      const lines = text.split('\n');
+      const out = [];
+      const isRow = l => /^\s*\|.*\|\s*$/.test(l);
+      const isSep = l => /^\s*\|[\s:\-|]+\|\s*$/.test(l) && l.includes('-');
+      const cells = l => l.trim().replace(/^\||\|$/g, '').split('|').map(c => mdInline(c.trim()));
+
+      let i = 0;
+      while (i < lines.length) {
+        if (isRow(lines[i]) && i + 1 < lines.length && isSep(lines[i + 1])) {
+          const head = cells(lines[i]);
+          i += 2;
+          const body = [];
+          while (i < lines.length && isRow(lines[i]) && !isSep(lines[i])) {
+            body.push(cells(lines[i]));
+            i++;
+          }
+          // Emitted as one line so the newline pass cannot break it apart.
+          out.push(
+            '<table><thead><tr>' + head.map(c => `<th>${c}</th>`).join('') + '</tr></thead>' +
+            '<tbody>' + body.map(r => '<tr>' + r.map(c => `<td>${c}</td>`).join('') + '</tr>').join('') +
+            '</tbody></table>'
+          );
+        } else {
+          out.push(lines[i]);
+          i++;
+        }
+      }
+      return out.join('\n');
+    }
+
     function markdownToHtml(s) {
       s = s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      s = mdTables(s);
       s = s.replace(/^###\s+(.+)$/gm, '<h3>$1</h3>');
       s = s.replace(/^##\s+(.+)$/gm, '<h2>$1</h2>');
       s = s.replace(/^#\s+(.+)$/gm, '<h1>$1</h1>');
-      s = s.replace(/\*\*([^\*]+)\*\*/g, '<strong>$1</strong>');
+      s = mdInline(s);
       s = s.replace(/^-\s+(.+)$/gm, '<li>$1</li>');
       s = s.replace(/(<li>[\s\S]*?<\/li>)/g, '<ul>$1</ul>');
       s = s.replace(/<\/ul>\s*<ul>/g, '');
       s = s.replace(/\n/g, '<br>');
+      // Block elements bring their own spacing; a <br> against one just adds a
+      // stray blank line.
+      s = s.replace(/<br>\s*(<(?:table|ul|h[1-3])\b)/g, '$1');
+      s = s.replace(/(<\/(?:table|ul|h[1-3])>)\s*<br>/g, '$1');
       return s;
     }
 
@@ -734,18 +862,47 @@ btnGo.onclick=async()=>{
       }
     }
 
-    // Copy to clipboard helpers
-    function copyText(id) {
-      const el = document.getElementById(id);
-      el.select();
-      document.execCommand('copy');
-      alert('已複製到剪貼簿！');
+    // Copy to clipboard.
+    //
+    // Two traps here. select() does nothing on a display:none element, so
+    // copying straight from a hidden textarea silently copies nothing. And
+    // navigator.clipboard does not exist over plain http to anything but
+    // localhost, which is exactly how this page is normally reached. So: try
+    // the modern API, otherwise stage the text in an off-screen textarea that
+    // is actually rendered, and report honestly if both fail.
+    async function copyToClipboard(value, label) {
+      if (!value) { alert('沒有內容可複製。'); return; }
+
+      if (navigator.clipboard && window.isSecureContext) {
+        try {
+          await navigator.clipboard.writeText(value);
+          alert(label + '已複製到剪貼簿！');
+          return;
+        } catch (e) { /* fall through */ }
+      }
+
+      const tmp = document.createElement('textarea');
+      tmp.value = value;
+      // Off-screen rather than hidden -- it must be rendered to be selectable.
+      tmp.style.position = 'fixed';
+      tmp.style.top = '-1000px';
+      tmp.setAttribute('readonly', '');
+      document.body.appendChild(tmp);
+      tmp.select();
+      let ok = false;
+      try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+      document.body.removeChild(tmp);
+
+      alert(ok ? label + '已複製到剪貼簿！'
+               : '複製失敗，請手動選取文字後按 Ctrl+C。');
     }
-    
+
+    function copyText(id) {
+      copyToClipboard(document.getElementById(id).value, '');
+    }
+
     function copyRichText() {
-      llmOutputRaw.select();
-      document.execCommand('copy');
-      alert('已複製 AI 成果到剪貼簿！');
+      copyToClipboard(llmOutputRaw.value, 'AI 成果');
     }
 
     // LLM API stream communication
@@ -776,9 +933,14 @@ btnGo.onclick=async()=>{
         const response = await fetch('/api/llm', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text, action, custom_prompt: customPrompt })
+          body: JSON.stringify({ text, action, custom_prompt: customPrompt, ...llmChoice() })
         });
-        
+
+        if (!response.ok) {
+          const err = await response.json().catch(() => ({}));
+          throw new Error(err.error || `伺服器回應 ${response.status}`);
+        }
+
         if (!response.body) {
           throw new Error('瀏覽器不支援 Streaming 讀取。');
         }
@@ -840,24 +1002,109 @@ btnGo.onclick=async()=>{
       }
     }
 
-    // Check LLM service health on load
-    async function checkLLMHealth() {
+    // Which LLM server to use, and which of its models, are the user's choice
+    // rather than a property of this machine -- so they live in the browser and
+    // survive a reload. The server's LLM_API_URL is only the starting point for
+    // a browser that has never been told otherwise.
+    const LLM_URL_KEY = 'breeze.llm.api_url';
+    const LLM_MODEL_KEY = 'breeze.llm.model';
+    const LLM_KEY_KEY = 'breeze.llm.api_key';
+
+    const shortModelName = id => (id && id.includes('/')) ? id.split('/').pop() : (id || '');
+
+    // What to send with every LLM request. Empty fields are omitted so the
+    // server falls back to its own configuration.
+    function llmChoice() {
+      const out = {};
+      const url = document.getElementById('llm-api-url').value.trim();
+      const key = document.getElementById('llm-api-key').value;
+      const model = document.getElementById('llm-model').value;
+      if (url) out.api_url = url;
+      if (key) out.api_key = key;
+      if (model) out.model = model;
+      return out;
+    }
+
+    function rememberLLM() {
+      const url = document.getElementById('llm-api-url').value.trim();
+      const model = document.getElementById('llm-model').value;
+      const key = document.getElementById('llm-api-key').value;
+      try {
+        url ? localStorage.setItem(LLM_URL_KEY, url) : localStorage.removeItem(LLM_URL_KEY);
+        model ? localStorage.setItem(LLM_MODEL_KEY, model) : localStorage.removeItem(LLM_MODEL_KEY);
+        key ? localStorage.setItem(LLM_KEY_KEY, key) : localStorage.removeItem(LLM_KEY_KEY);
+      } catch (e) { /* private browsing -- the choice just will not persist */ }
+    }
+
+    // Re-query whatever address is in the box. Called on load and by the button.
+    async function reloadLLM() {
       const llmDot = document.getElementById('llm-dot');
       const llmStatus = document.getElementById('llm-status');
+      const sel = document.getElementById('llm-model');
+      const hint = document.getElementById('llm-model-hint');
+      const urlEl = document.getElementById('llm-api-url');
+
+      let remembered = '';
+      try { remembered = localStorage.getItem(LLM_MODEL_KEY) || ''; } catch (e) {}
+
+      hint.textContent = '查詢中...';
       try {
-        const r = await fetch('/api/llm/health');
+        // POST, not GET: the key must not travel in a query string.
+        const r = await fetch('/api/llm/models', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...llmChoice(), model: remembered })
+        });
         const j = await r.json();
-        if (j.ok && j.status === 'online') {
+
+        // Show the address actually used, so a blank box fills in with the
+        // server default rather than staying empty and looking unconfigured.
+        if (j.api_url) urlEl.value = j.api_url;
+
+        sel.innerHTML = '';
+        if (j.ok && j.models && j.models.length) {
+          j.models.forEach(id => {
+            const o = document.createElement('option');
+            o.value = id;
+            o.textContent = shortModelName(id);
+            o.title = id;
+            o.selected = (id === j.default);
+            sel.appendChild(o);
+          });
+          sel.disabled = false;
           llmDot.className = 'dot';
-          llmStatus.textContent = 'Gemma-4: 18082 (Online)';
+          llmStatus.textContent = `LLM: ${shortModelName(j.default)} (Online)`;
+          hint.textContent = j.fallback
+            ? `上次選的模型「${shortModelName(remembered)}」已不在這台伺服器上，已改用 ${shortModelName(j.default)}。`
+            : `這台伺服器提供 ${j.models.length} 個模型。`;
+          rememberLLM();
         } else {
+          const o = document.createElement('option');
+          o.textContent = '（連不上，無可用模型）';
+          sel.appendChild(o);
+          sel.disabled = true;
           llmDot.className = 'dot yellow';
-          llmStatus.textContent = 'Gemma-4: 18082 (Offline)';
+          llmStatus.textContent = `LLM: ${j.api_url || ''} (Offline)`;
+          hint.textContent = j.error || '連不上這個位址，請確認服務已啟動；若需要金鑰請填入。';
         }
-      } catch(e) {
+      } catch (e) {
+        sel.innerHTML = '';
+        sel.disabled = true;
         llmDot.className = 'dot yellow';
-        llmStatus.textContent = 'Gemma-4: 18082 (Error)';
+        llmStatus.textContent = 'LLM: (Error)';
+        hint.textContent = '查詢失敗：' + e.message;
       }
+    }
+
+    async function checkLLMHealth() {
+      // Restore the user's choice before the first query.
+      try {
+        const savedUrl = localStorage.getItem(LLM_URL_KEY);
+        const savedKey = localStorage.getItem(LLM_KEY_KEY);
+        if (savedUrl) document.getElementById('llm-api-url').value = savedUrl;
+        if (savedKey) document.getElementById('llm-api-key').value = savedKey;
+      } catch (e) {}
+      await reloadLLM();
     }
 
     async function fetchSystemCapabilities() {
