@@ -117,7 +117,9 @@ MODEL_VARIANTS = {
 }
 
 MODEL_DIR = _path("MODEL_DIR", "models")
-MODEL_VARIANT = _str("MODEL_VARIANT", "25")
+# 26 by default because that is what the reference deployment has always run:
+# the single .bin it shipped converts, byte for byte, from Breeze-ASR-26.
+MODEL_VARIANT = _str("MODEL_VARIANT", "26")
 
 
 def model_path(variant=None):
