@@ -467,9 +467,18 @@
     <div class="card" id="ai-panel">
       <h2>🧠 AI 秘書自動整理</h2>
 
-      <div class="input-group" id="llm-model-group" style="display:none;">
+      <div class="input-group">
+        <label for="llm-api-url">LLM API 來源</label>
+        <div style="display:flex; gap:8px;">
+          <input type="text" id="llm-api-url" placeholder="http://127.0.0.1:8002" style="flex:1;" />
+          <button class="secondary" id="btn-llm-reload" onclick="reloadLLM()">🔄 連線</button>
+        </div>
+      </div>
+
+      <div class="input-group" id="llm-model-group">
         <label for="llm-model">語言模型</label>
-        <select id="llm-model"></select>
+        <select id="llm-model" onchange="rememberLLM()"></select>
+        <small id="llm-model-hint" style="color:var(--muted); font-size:11px;"></small>
       </div>
 
       <div class="input-group">
@@ -840,7 +849,8 @@ btnGo.onclick=async()=>{
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ text, action, custom_prompt: customPrompt,
-                                 model: document.getElementById('llm-model').value || undefined })
+                                 model: document.getElementById('llm-model').value || undefined,
+                                 api_url: document.getElementById('llm-api-url').value.trim() || undefined })
         });
 
         if (!response.ok) {
@@ -909,42 +919,90 @@ btnGo.onclick=async()=>{
       }
     }
 
-    // Check LLM service health on load, and offer whatever it actually serves.
-    // The model list comes from the server rather than a fixed table -- what is
-    // behind LLM_API_URL could be llama.cpp, vLLM or anything OpenAI-shaped.
-    async function checkLLMHealth() {
+    // Which LLM server to use, and which of its models, are the user's choice
+    // rather than a property of this machine -- so they live in the browser and
+    // survive a reload. The server's LLM_API_URL is only the starting point for
+    // a browser that has never been told otherwise.
+    const LLM_URL_KEY = 'breeze.llm.api_url';
+    const LLM_MODEL_KEY = 'breeze.llm.model';
+
+    const shortModelName = id => (id && id.includes('/')) ? id.split('/').pop() : (id || '');
+
+    function rememberLLM() {
+      const url = document.getElementById('llm-api-url').value.trim();
+      const model = document.getElementById('llm-model').value;
+      try {
+        if (url) localStorage.setItem(LLM_URL_KEY, url); else localStorage.removeItem(LLM_URL_KEY);
+        if (model) localStorage.setItem(LLM_MODEL_KEY, model); else localStorage.removeItem(LLM_MODEL_KEY);
+      } catch (e) { /* private browsing -- the choice just will not persist */ }
+    }
+
+    // Re-query whatever address is in the box. Called on load and by the button.
+    async function reloadLLM() {
       const llmDot = document.getElementById('llm-dot');
       const llmStatus = document.getElementById('llm-status');
       const sel = document.getElementById('llm-model');
-      const grp = document.getElementById('llm-model-group');
-      const short = id => id.includes('/') ? id.split('/').pop() : id;
+      const hint = document.getElementById('llm-model-hint');
+      const urlEl = document.getElementById('llm-api-url');
+
+      const url = urlEl.value.trim();
+      let remembered = '';
+      try { remembered = localStorage.getItem(LLM_MODEL_KEY) || ''; } catch (e) {}
+
+      hint.textContent = '查詢中...';
       try {
-        const r = await fetch('/api/llm/health');
+        const qs = new URLSearchParams();
+        if (url) qs.set('api_url', url);
+        if (remembered) qs.set('model', remembered);
+        const r = await fetch('/api/llm/models?' + qs.toString());
         const j = await r.json();
-        if (j.ok && j.status === 'online') {
-          llmDot.className = 'dot';
-          llmStatus.textContent = `LLM: ${short(j.model || '?')} (Online)`;
-          sel.innerHTML = '';
-          (j.models || []).forEach(id => {
+
+        // Show the address actually used, so a blank box fills in with the
+        // server default rather than staying empty and looking unconfigured.
+        if (j.api_url) urlEl.value = j.api_url;
+
+        sel.innerHTML = '';
+        if (j.ok && j.models && j.models.length) {
+          j.models.forEach(id => {
             const o = document.createElement('option');
             o.value = id;
-            o.textContent = short(id);
+            o.textContent = shortModelName(id);
             o.title = id;
-            o.selected = (id === j.model);
+            o.selected = (id === j.default);
             sel.appendChild(o);
           });
-          // One model is not a choice; only show the control when it is.
-          grp.style.display = (j.models || []).length > 1 ? '' : 'none';
+          sel.disabled = false;
+          llmDot.className = 'dot';
+          llmStatus.textContent = `LLM: ${shortModelName(j.default)} (Online)`;
+          hint.textContent = j.fallback
+            ? `上次選的模型「${shortModelName(remembered)}」已不在這台伺服器上，已改用 ${shortModelName(j.default)}。`
+            : `這台伺服器提供 ${j.models.length} 個模型。`;
+          rememberLLM();
         } else {
+          const o = document.createElement('option');
+          o.textContent = '（連不上，無可用模型）';
+          sel.appendChild(o);
+          sel.disabled = true;
           llmDot.className = 'dot yellow';
-          llmStatus.textContent = `LLM: ${j.api_url || ''} (Offline)`;
-          grp.style.display = 'none';
+          llmStatus.textContent = `LLM: ${j.api_url || url || ''} (Offline)`;
+          hint.textContent = j.error || '連不上這個位址，請確認服務已啟動。';
         }
-      } catch(e) {
+      } catch (e) {
+        sel.innerHTML = '';
+        sel.disabled = true;
         llmDot.className = 'dot yellow';
         llmStatus.textContent = 'LLM: (Error)';
-        grp.style.display = 'none';
+        hint.textContent = '查詢失敗：' + e.message;
       }
+    }
+
+    async function checkLLMHealth() {
+      // Restore the user's choice before the first query.
+      try {
+        const saved = localStorage.getItem(LLM_URL_KEY);
+        if (saved) document.getElementById('llm-api-url').value = saved;
+      } catch (e) {}
+      await reloadLLM();
     }
 
     async function fetchSystemCapabilities() {
