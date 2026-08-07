@@ -94,6 +94,10 @@ WHISPER_CLI = _path("WHISPER_CLI", HARDWARE.get("whisper_cli") or "engine/whispe
 MODEL_PATH = _path("MODEL_PATH", "models/ggml-breeze-asr-26.bin")
 MODEL_URL = _str("MODEL_URL")
 MODEL_SHA256 = _str("MODEL_SHA256")
+# Only read by scripts/convert_model.sh, which builds a ggml model from the
+# upstream checkpoint. Kept here so every setting still has one home.
+MODEL_HF_REPO = _str("MODEL_HF_REPO", "MediaTek-Research/Breeze-ASR-25")
+MODEL_HF_REVISION = _str("MODEL_HF_REVISION", "main")
 ASR_LANGUAGE = _str("ASR_LANGUAGE", "zh")
 ASR_THREADS = _int("ASR_THREADS", HARDWARE.get("cpu_cores") or 4)
 

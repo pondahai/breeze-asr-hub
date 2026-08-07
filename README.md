@@ -47,20 +47,37 @@ scripts/service.sh status
 
 ### 模型
 
-安裝腳本**不會**自動下載 Breeze ASR 模型。參考機上那顆 `ggml-breeze-asr-26.bin`
-是本地轉檔產生的,與其寫一個會 404 的 Hugging Face 連結,不如講清楚:
+沒有人發佈現成的 Breeze ASR ggml 檔,所以取得模型有三條路:
 
 ```bash
-# 有本地檔案
+# 1. 已經有一顆
 scripts/fetch_model.sh /path/to/ggml-breeze-asr-26.bin
 
-# 或自己架的位置:在 .env 設定 MODEL_URL= 後重跑
+# 2. 自己架的位置:在 .env 設定 MODEL_URL= 後重跑
 scripts/fetch_model.sh
+
+# 3. 從 Hugging Face 原始權重轉一顆出來
+scripts/fetch_model.sh --convert
 ```
 
+第三條路走 `scripts/convert_model.sh`:下載 `MODEL_HF_REPO`
+(預設 [MediaTek-Research/Breeze-ASR-25](https://huggingface.co/MediaTek-Research/Breeze-ASR-25),
+基於 whisper-large-v2 微調),再用 whisper.cpp 的 `convert-h5-to-ggml.py` 轉成 ggml。
+
+```bash
+scripts/convert_model.sh --repo openai/whisper-small   # 換一顆來源模型
+scripts/convert_model.sh --src ./Breeze-ASR-25         # 用已經下載好的 checkout(離線可行)
+scripts/convert_model.sh --quantize q5_0               # 量化,large-v2 從 ~3 GB 降到 ~1 GB
+scripts/convert_model.sh --keep-src                    # 保留下載內容供重跑
+```
+
+轉檔需要 torch 與 transformers(`requirements-convert.txt`),推理端完全用不到,
+所以刻意不寫進 `requirements.txt`。**Jetson 上建議不要在機器上轉**:PyPI 沒有
+JetPack 的 torch wheel。在桌機轉好之後把 `.bin` 複製過去,再走第一條路即可 ——
+轉檔腳本最後會印出 SHA256,填進 `.env` 的 `MODEL_SHA256` 就能讓 `fetch_model.sh` 驗證。
+
 任何 whisper.cpp 相容的 ggml 模型都能用,Breeze ASR 只是對台灣口音的中文特別準。
-想先快速驗證整條路徑通不通,可以拿 whisper.cpp 內建的 `download-ggml-model.sh`
-抓一顆小模型,把 `MODEL_PATH` 指過去。
+想先快速驗證整條路徑通不通,拿 `--repo openai/whisper-small` 轉一顆小的最快。
 
 ---
 
@@ -124,6 +141,7 @@ breeze-asr-hub/
 │   ├── probe_hardware.sh    → hardware.json
 │   ├── setup_engine.sh      clone + 依硬體編譯 whisper.cpp
 │   ├── fetch_model.sh       放置模型(含 SHA256 驗證)
+│   ├── convert_model.sh     Hugging Face 權重 → ggml(選配量化)
 │   ├── install.sh           一鍵安裝
 │   ├── run.sh               前景執行
 │   └── service.sh           systemd 生命週期管理

@@ -55,6 +55,28 @@ bash scripts/setup_engine.sh
 
 指定其他版本:`WHISPER_REF=v1.7.4 bash scripts/setup_engine.sh`。
 
+## 模型轉檔失敗
+
+`scripts/convert_model.sh` 常見的幾種卡點:
+
+**`Conversion needs Python packages that are not installed`** —— 轉檔需要 torch
+與 transformers(`requirements-convert.txt`),推理端不需要。Jetson 上 PyPI 沒有
+對應 JetPack 的 torch wheel,裝下去不是失敗就是裝到跟 CUDA runtime 對不起來的
+CPU 版。**在桌機轉好再把 `.bin` 複製過去**,然後走 `scripts/fetch_model.sh <path>`。
+
+**`is not a readable .npz`** —— 抓 mel filterbank 時被 proxy 或登入頁攔截,存下來
+的是 HTML 而不是 npz。刪掉 `var/model-src/openai-whisper/whisper/assets/mel_filters.npz`
+重跑;網路受限的話用 `MEL_FILTERS_URL=` 指到自己的鏡像。
+
+**`neither vocab.json nor tokenizer.json is present`** —— 來源不是 Whisper 架構的
+repo,或下載被截斷。用 `--keep-src` 重跑後檢查 `var/model-src/` 底下的內容。
+
+**轉到一半被 OOM kill** —— 轉 large-v2 時 torch 會把整份權重讀進記憶體,尖峰大約
+需要 8 GB RAM。這一步跟 GPU 無關,加 swap 或換台機器轉都可以。
+
+轉檔中斷後重跑不必重新下載:加 `--keep-src` 會把下載內容留在 `var/model-src/`,
+下次用 `--src` 指過去即可。
+
 ## 講者分離 API 回 500
 
 長期背景執行的 WhisperX 服務(8088)在 `subprocess` 載入 PyTorch/Pyannote 時,
