@@ -267,6 +267,16 @@ fi
 if [ -n "${QUANTIZE}" ]; then
   QUANT_BIN="${ENGINE_DIR}/build/bin/quantize"
   if [ ! -x "${QUANT_BIN}" ]; then
+    command -v cmake >/dev/null 2>&1 || { echo "cmake not found, needed to build the quantize tool" >&2; exit 1; }
+    # Converting does not require a *built* engine, only the checkout, so the
+    # build directory may never have been configured. Quantizing is CPU-only
+    # and single-purpose, so configure a plain one rather than reaching for
+    # the accelerator flags setup_engine.sh picks.
+    if [ ! -f "${ENGINE_DIR}/build/CMakeCache.txt" ]; then
+      echo "==> Configuring whisper.cpp (build directory not set up yet)"
+      cmake -S "${ENGINE_DIR}" -B "${ENGINE_DIR}/build" \
+        -DCMAKE_BUILD_TYPE=Release -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_EXAMPLES=ON
+    fi
     echo "==> Building whisper.cpp's quantize tool"
     cmake --build "${ENGINE_DIR}/build" --config Release --target quantize
   fi

@@ -71,6 +71,11 @@ scripts/convert_model.sh --quantize q5_0               # 量化,large-v2 從 ~3 
 scripts/convert_model.sh --keep-src                    # 保留下載內容供重跑
 ```
 
+轉檔只需要 whisper.cpp 的 **checkout**(轉檔腳本用它的 `convert-h5-to-ggml.py`),
+不必先編譯 —— 只是想在桌機轉一顆帶去 Jetson 的話,
+`git clone --depth 1 https://github.com/ggml-org/whisper.cpp engine/whisper.cpp` 就夠了,
+不需要跑 `setup_engine.sh`。(只有 `--quantize` 會真的去編一個 `quantize` 出來。)
+
 轉檔需要 torch 與 transformers(`requirements-convert.txt`),推理端完全用不到,
 所以刻意不寫進 `requirements.txt`。**Jetson 上建議不要在機器上轉**:PyPI 沒有
 JetPack 的 torch wheel。在桌機轉好之後把 `.bin` 複製過去,再走第一條路即可 ——
