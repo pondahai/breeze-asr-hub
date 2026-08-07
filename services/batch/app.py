@@ -447,6 +447,7 @@ def job_status(job_id):
         'elapsed_sec': round(time.time() - j['start_ts'], 2),
         'returncode': j['returncode'], 'pid': j['pid'],
         'input_path': j['input_path'], 'audio_path': j.get('audio_path'),
+        'model': j.get('model'),
         'text': txt, 'log_tail': tail_text(j['log_path'], 50),
     })
 
