@@ -288,6 +288,39 @@
       color: #38bdf8;
     }
 
+    .output-rich table {
+      border-collapse: collapse;
+      width: 100%;
+      margin: 12px 0;
+      font-size: 13px;
+      /* Meeting minutes can carry wide columns; scroll the table rather than
+         letting it push the panel sideways. */
+      display: block;
+      overflow-x: auto;
+    }
+    .output-rich th, .output-rich td {
+      border: 1px solid var(--border);
+      padding: 8px 10px;
+      text-align: left;
+      vertical-align: top;
+    }
+    .output-rich th {
+      background: rgba(255, 255, 255, 0.05);
+      color: var(--accent-green);
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    .output-rich tbody tr:nth-child(even) {
+      background: rgba(255, 255, 255, 0.02);
+    }
+    .output-rich code {
+      background: rgba(0, 0, 0, 0.35);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 1px 5px;
+      font-size: 12px;
+    }
+
     pre.log-box {
       white-space: pre-wrap;
       background: rgba(0, 0, 0, 0.4);
@@ -755,16 +788,63 @@ btnGo.onclick=async()=>{
     };
 
     // LLM Markdown parsing
+    // Inline formatting shared by ordinary text and table cells.
+    function mdInline(s) {
+      return s.replace(/\*\*([^\*]+)\*\*/g, '<strong>$1</strong>')
+              .replace(/`([^`]+)`/g, '<code>$1</code>');
+    }
+
+    // Pipe tables, GitHub style: a header row, a |---|---| separator, then
+    // body rows. Handled before anything else, because the line-based rules
+    // below (and the newline-to-<br> pass) would otherwise shred them -- which
+    // is why tables used to come out as raw pipes. The "minutes" prompt asks
+    // for markdown, so the model produces these routinely.
+    function mdTables(text) {
+      const lines = text.split('\n');
+      const out = [];
+      const isRow = l => /^\s*\|.*\|\s*$/.test(l);
+      const isSep = l => /^\s*\|[\s:\-|]+\|\s*$/.test(l) && l.includes('-');
+      const cells = l => l.trim().replace(/^\||\|$/g, '').split('|').map(c => mdInline(c.trim()));
+
+      let i = 0;
+      while (i < lines.length) {
+        if (isRow(lines[i]) && i + 1 < lines.length && isSep(lines[i + 1])) {
+          const head = cells(lines[i]);
+          i += 2;
+          const body = [];
+          while (i < lines.length && isRow(lines[i]) && !isSep(lines[i])) {
+            body.push(cells(lines[i]));
+            i++;
+          }
+          // Emitted as one line so the newline pass cannot break it apart.
+          out.push(
+            '<table><thead><tr>' + head.map(c => `<th>${c}</th>`).join('') + '</tr></thead>' +
+            '<tbody>' + body.map(r => '<tr>' + r.map(c => `<td>${c}</td>`).join('') + '</tr>').join('') +
+            '</tbody></table>'
+          );
+        } else {
+          out.push(lines[i]);
+          i++;
+        }
+      }
+      return out.join('\n');
+    }
+
     function markdownToHtml(s) {
       s = s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      s = mdTables(s);
       s = s.replace(/^###\s+(.+)$/gm, '<h3>$1</h3>');
       s = s.replace(/^##\s+(.+)$/gm, '<h2>$1</h2>');
       s = s.replace(/^#\s+(.+)$/gm, '<h1>$1</h1>');
-      s = s.replace(/\*\*([^\*]+)\*\*/g, '<strong>$1</strong>');
+      s = mdInline(s);
       s = s.replace(/^-\s+(.+)$/gm, '<li>$1</li>');
       s = s.replace(/(<li>[\s\S]*?<\/li>)/g, '<ul>$1</ul>');
       s = s.replace(/<\/ul>\s*<ul>/g, '');
       s = s.replace(/\n/g, '<br>');
+      // Block elements bring their own spacing; a <br> against one just adds a
+      // stray blank line.
+      s = s.replace(/<br>\s*(<(?:table|ul|h[1-3])\b)/g, '$1');
+      s = s.replace(/(<\/(?:table|ul|h[1-3])>)\s*<br>/g, '$1');
       return s;
     }
 
