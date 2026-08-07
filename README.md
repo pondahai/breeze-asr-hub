@@ -126,6 +126,86 @@ CUDA 13 的 aarch64 wheel,轉檔正常。)在桌機轉好之後把 `.bin` 複製
 
 ---
 
+## 使用方法
+
+兩個服務都有網頁介面(批次 `http://<IP>:8013`、即時台 `http://<IP>:8015`),
+但都是純 HTTP,可以直接當 API 用。
+
+### 批次轉寫 API(`8013`)
+
+| 方法 | 路徑 | 說明 |
+| --- | --- | --- |
+| `POST` | `/api/transcribe` | 送出轉寫工作,回傳 `job_id` |
+| `GET` | `/api/jobs/<job_id>` | 查狀態與結果 |
+| `GET` | `/api/jobs/<job_id>/download?ext=txt` | 下載結果檔(`txt` / `srt` / `vtt`) |
+| `POST` | `/api/jobs/<job_id>/cancel` | 中止進行中的工作 |
+| `POST` | `/api/upload_chunk` | 分片上傳(大檔用,見下) |
+| `GET` | `/api/models` | 有哪幾顆模型可用 |
+| `GET` | `/api/system/capabilities` | 本機探測到的能力 |
+| `POST` | `/api/llm` | 把逐字稿丟給下游 LLM 處理(需設定 `LLM_API_URL`) |
+| `GET` | `/api/llm/health` | 下游 LLM 是否活著 |
+
+`POST /api/transcribe` 吃 multipart 表單:
+
+| 欄位 | 預設 | 說明 |
+| --- | --- | --- |
+| `file` | — | 音檔。支援 `.wav .mp3 .m4a .flac .ogg` |
+| `model` | `MODEL_VARIANT` | `25` 或 `26`,見上節 |
+| `format` | `txt` | `txt` / `srt` / `vtt` |
+| `max_len` | `20` | 每段字幕最長字數 |
+| `use_whisperx` | `false` | 改用 WhisperX 做講者分離 |
+| `hf_token` | — | WhisperX 取用受管制權重時需要 |
+| `min_speakers` / `max_speakers` | — | 提示講者人數,幫助分離 |
+| `upload_id` + `filename` | — | 改用分片上傳時,取代 `file` |
+
+最短的一次完整流程:
+
+```bash
+# 送出
+JOB=$(curl -sS -F file=@meeting.wav -F model=25 -F format=srt \
+        localhost:8013/api/transcribe | python3 -c 'import sys,json;print(json.load(sys.stdin)["job_id"])')
+
+# 輪詢直到 done(status 會是 running / done / failed / cancelled)
+until [ "$(curl -sS localhost:8013/api/jobs/$JOB | python3 -c 'import sys,json;print(json.load(sys.stdin)["status"])')" = done ]; do sleep 5; done
+
+# 取檔
+curl -sS -o meeting.srt "localhost:8013/api/jobs/$JOB/download?ext=srt"
+```
+
+`GET /api/jobs/<job_id>` 回傳裡除了 `status` 與 `text`,還有 `model`(這份逐字稿是哪顆
+模型轉的)、`elapsed_sec` 與 `log_tail`(whisper-cli 的即時輸出,可直接顯示進度)。
+
+**大檔請走分片上傳。** 直接 POST 幾百 MB 容易在反向代理或瀏覽器端斷掉。作法是先
+把檔案切塊逐一 `POST /api/upload_chunk`(帶同一個自訂的 `upload_id` 與遞增的
+`chunk_index`),全部送完後再 `POST /api/transcribe`,這次不帶 `file`,改帶
+`upload_id` 與 `filename`,伺服器會自己組裝。網頁介面就是這樣做的。
+
+### 即時聽寫台 API(`8015` HTTP / `8016` WebSocket)
+
+| 方法 | 路徑 | 說明 |
+| --- | --- | --- |
+| `GET` | `/api/config` | 埠號、鏡頭、麥克風、門檻等前端需要的資訊 |
+| `GET` | `/api/transcriptions` | 目前累積的逐字稿 |
+| `GET` | `/api/models` | 可用模型與目前使用中的那顆 |
+| `POST` | `/api/model` | 切換模型,`{"model":"25"}`,下一段語音生效 |
+| `GET` | `/video_frame` | 單張 webcam JPEG(沒鏡頭時 404) |
+
+即時結果從 WebSocket(`ws://<IP>:8016`)推送,訊息是 JSON,`type` 有三種:
+
+| `type` | 內容 |
+| --- | --- |
+| `status` | 目前狀態(`LISTENING` / `TRANSCRIBING` 等)與音壓值 |
+| `transcription` | 一段語音轉寫完成,含文字、時間與長度 |
+| `frame` | webcam 影格(沒鏡頭或 `CAMERA_ENABLED=0` 時不會出現) |
+
+啟動前建議先校正 VAD 門檻,否則會一直誤觸發或完全不觸發:
+
+```bash
+python3 -m breeze_hub.calibrate
+```
+
+---
+
 ## 設定
 
 所有可調參數集中在一個地方,優先序由高到低:
@@ -195,6 +275,57 @@ breeze-asr-hub/
 ```
 
 即時聽寫台的前端沒有任何 CDN 依賴,也沒有 build step,離線機器直接可用。
+
+---
+
+## 開發歷程
+
+這個專案是從姊妹專案
+[ggml-breeze-asr-26-webui](https://github.com/pondahai/ggml-breeze-asr-26-webui)
+長出來的。那邊先有一套跑在 Jetson Xavier 上的網頁介面,這裡把「跑得起來」的部分
+抽成不綁單一機器的形式,並補上即時聽寫。兩個專案各自獨立,但模型共用同一套慣例
+(`ggml-breeze-asr-<25|26>.bin`),webui 的模型就是用這裡的轉檔腳本產生的。
+
+| 時間 | 里程碑 |
+| --- | --- |
+| 2026-07 | 初版:硬體探測 → 依探測結果編譯 → 批次與即時兩套服務。參考機 Jetson AGX Xavier |
+| 2026-08 | 加入從 Hugging Face 權重轉出 ggml 的能力,模型不再需要「別人給一顆」 |
+| 2026-08 | 在 DGX Spark 上完整實測,修掉一批只有真硬體才會現形的問題,並改成兩顆模型並存可切換 |
+
+### 為什麼要有轉檔腳本
+
+原本 `ggml-breeze-asr-26.bin` 是在參考機上手工轉出來的,沒有留下可重現的步驟 ——
+任何人拿到這個 repo 都無法自己產生一顆。`scripts/convert_model.sh` 就是補這個洞。
+
+驗證方式是把它拿去重現那顆既有的模型:從 `MediaTek-Research/Breeze-ASR-26` 轉出
+的檔案與參考機上那顆 **sha256 完全相同**
+(`6d58f81d79155deb5037f995a048856f6deaa9e06f59a89183cc421fa37cb1ad`),不是「看起來
+對」而是逐位元組相同。順帶也確認了那顆模型的真實身分是 26 而非 25。
+
+### DGX Spark 實測揭露的問題
+
+「不綁單一機器」這個設計在遇到第一台沒見過的硬體時並沒有直接通過。GB10 不是
+Jetson,也不是一般的獨立顯卡,於是:
+
+- `nvidia-smi` 的 `memory.total` 回傳 `[N/A]`(統一記憶體),進到算術運算讓探測腳本
+  直接中止 —— 只認 Jetson 的共享記憶體分支救不了它
+- CUDA 裝在 `/usr/local/cuda` 但 `nvcc` 不在 `PATH` 上,cmake 找得到 toolkit 卻報
+  `No CMAKE_CUDA_COMPILER could be found`,引擎完全編不出來
+- `--quantize` 要 cmake 編一個叫 `quantize` 的目標,但 whisper.cpp 早已改名為
+  `whisper-quantize` —— 這條路在任何近期版本上都不可能成功過
+
+三個都是阻斷級,也都只在真機器上才會現形。修正後 `cuda.arch` 改成向驅動查詢
+compute capability 而非查表,少一層「清單以外就沒轍」的假設。
+
+### 已知邊界
+
+目前實測過的是 Jetson AGX Xavier 與 DGX Spark,也就是 **NVIDIA + Linux**。
+`setup_engine.sh` 只處理 CUDA / OpenBLAS / 純 CPU 三條路,**沒有 Metal、ROCm、
+Vulkan 或 SYCL 分支**,腳本本身也都是 bash(Windows 需要 WSL)。純 CPU 路徑存在
+但尚未實測。
+
+模型面向的是台灣華語與台語;其他語言直接用官方 whisper 模型會更好,不過服務外殼
+本身不綁 Breeze —— `MODEL_PATH` 指向任何 whisper.cpp 相容的 ggml 都能跑。
 
 ---
 
