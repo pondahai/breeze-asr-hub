@@ -29,6 +29,7 @@ print(d if d not in (None, False) else ('' if d is not True else 'true'))" "${HA
 
 ACCELERATOR="$(read_json accelerator)"
 CUDA_ARCH="$(read_json cuda.arch)"
+CUDA_NVCC="$(read_json cuda.nvcc)"
 CPU_CORES="$(read_json cpu_cores)"
 HAS_BLAS="$(read_json has_openblas)"
 JOBS="${JOBS:-${CPU_CORES:-4}}"
@@ -51,6 +52,13 @@ if [ "${ACCELERATOR}" = "cuda" ]; then
   CMAKE_ARGS+=(-DGGML_CUDA=ON)
   if [ -n "${CUDA_ARCH}" ]; then
     CMAKE_ARGS+=(-DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCH}")
+  fi
+  # A CUDA install does not necessarily put nvcc on PATH -- DGX OS does not --
+  # and cmake then finds the toolkit headers but fails with "No
+  # CMAKE_CUDA_COMPILER could be found". The probe already resolved nvcc, so
+  # hand cmake the path rather than depending on the caller's environment.
+  if [ -n "${CUDA_NVCC}" ] && ! command -v nvcc >/dev/null 2>&1; then
+    CMAKE_ARGS+=(-DCMAKE_CUDA_COMPILER="${CUDA_NVCC}")
   fi
   # Xavier-class parts OOM during multimodal inference when ggml uses CUDA
   # virtual memory management; disabling it costs nothing measurable here.
