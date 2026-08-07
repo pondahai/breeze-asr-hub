@@ -768,18 +768,47 @@ btnGo.onclick=async()=>{
       }
     }
 
-    // Copy to clipboard helpers
-    function copyText(id) {
-      const el = document.getElementById(id);
-      el.select();
-      document.execCommand('copy');
-      alert('已複製到剪貼簿！');
+    // Copy to clipboard.
+    //
+    // Two traps here. select() does nothing on a display:none element, so
+    // copying straight from a hidden textarea silently copies nothing. And
+    // navigator.clipboard does not exist over plain http to anything but
+    // localhost, which is exactly how this page is normally reached. So: try
+    // the modern API, otherwise stage the text in an off-screen textarea that
+    // is actually rendered, and report honestly if both fail.
+    async function copyToClipboard(value, label) {
+      if (!value) { alert('沒有內容可複製。'); return; }
+
+      if (navigator.clipboard && window.isSecureContext) {
+        try {
+          await navigator.clipboard.writeText(value);
+          alert(label + '已複製到剪貼簿！');
+          return;
+        } catch (e) { /* fall through */ }
+      }
+
+      const tmp = document.createElement('textarea');
+      tmp.value = value;
+      // Off-screen rather than hidden -- it must be rendered to be selectable.
+      tmp.style.position = 'fixed';
+      tmp.style.top = '-1000px';
+      tmp.setAttribute('readonly', '');
+      document.body.appendChild(tmp);
+      tmp.select();
+      let ok = false;
+      try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+      document.body.removeChild(tmp);
+
+      alert(ok ? label + '已複製到剪貼簿！'
+               : '複製失敗，請手動選取文字後按 Ctrl+C。');
     }
-    
+
+    function copyText(id) {
+      copyToClipboard(document.getElementById(id).value, '');
+    }
+
     function copyRichText() {
-      llmOutputRaw.select();
-      document.execCommand('copy');
-      alert('已複製 AI 成果到剪貼簿！');
+      copyToClipboard(llmOutputRaw.value, 'AI 成果');
     }
 
     // LLM API stream communication
