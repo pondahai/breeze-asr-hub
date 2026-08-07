@@ -265,8 +265,20 @@ fi
 # --- 6. Quantize (optional) -------------------------------------------------
 
 if [ -n "${QUANTIZE}" ]; then
-  QUANT_BIN="${ENGINE_DIR}/build/bin/quantize"
-  if [ ! -x "${QUANT_BIN}" ]; then
+  # whisper.cpp renamed the tool to whisper-quantize; older checkouts still
+  # call it quantize. Look for either, in both the modern bin/ layout and the
+  # flat one older builds produced.
+  QUANT_NAMES="whisper-quantize quantize"
+  find_quant_bin() {
+    local n
+    for n in ${QUANT_NAMES}; do
+      if [ -x "${ENGINE_DIR}/build/bin/${n}" ]; then echo "${ENGINE_DIR}/build/bin/${n}"; return 0; fi
+      if [ -x "${ENGINE_DIR}/build/${n}" ]; then echo "${ENGINE_DIR}/build/${n}"; return 0; fi
+    done
+    return 1
+  }
+  QUANT_BIN="$(find_quant_bin || true)"
+  if [ -z "${QUANT_BIN}" ]; then
     command -v cmake >/dev/null 2>&1 || { echo "cmake not found, needed to build the quantize tool" >&2; exit 1; }
     # Converting does not require a *built* engine, only the checkout, so the
     # build directory may never have been configured. Quantizing is CPU-only
@@ -278,10 +290,20 @@ if [ -n "${QUANTIZE}" ]; then
         -DCMAKE_BUILD_TYPE=Release -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_EXAMPLES=ON
     fi
     echo "==> Building whisper.cpp's quantize tool"
-    cmake --build "${ENGINE_DIR}/build" --config Release --target quantize
+    BUILT=false
+    for TARGET in ${QUANT_NAMES}; do
+      if cmake --build "${ENGINE_DIR}/build" --config Release --target "${TARGET}" 2>/dev/null; then
+        BUILT=true
+        break
+      fi
+    done
+    [ "${BUILT}" = true ] || {
+      echo "could not build a quantize target (tried: ${QUANT_NAMES})" >&2
+      exit 1
+    }
+    QUANT_BIN="$(find_quant_bin || true)"
   fi
-  [ -x "${QUANT_BIN}" ] || QUANT_BIN="${ENGINE_DIR}/build/quantize"
-  [ -x "${QUANT_BIN}" ] || { echo "quantize tool not found after building" >&2; exit 1; }
+  [ -n "${QUANT_BIN}" ] && [ -x "${QUANT_BIN}" ] || { echo "quantize tool not found after building" >&2; exit 1; }
 
   echo "==> Quantizing to ${QUANTIZE}"
   QUANTIZED="${BUILD_DIR}/ggml-model-${QUANTIZE}.bin"
