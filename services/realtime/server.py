@@ -319,7 +319,8 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             try:
                 path_ = set_current_model(variant)
             except KeyError as exc:
-                self._json(400, {"ok": False, "error": str(exc)})
+                # str() on a KeyError re-quotes the message; take the arg itself.
+                self._json(400, {"ok": False, "error": exc.args[0] if exc.args else "unknown model"})
                 return
             except IOError as exc:
                 self._json(409, {"ok": False, "error": str(exc)})
