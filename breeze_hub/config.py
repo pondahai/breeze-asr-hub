@@ -171,7 +171,10 @@ ASR_THREADS = _int("ASR_THREADS", HARDWARE.get("cpu_cores") or 4)
 # --- Network ----------------------------------------------------------------
 
 HOST = _str("HOST", "0.0.0.0")
-BATCH_PORT = _int("BATCH_PORT", 8013)
+# 8014 rather than 8013: the sibling ggml-breeze-asr-26-webui serves on 8013 and
+# is the one already deployed on the reference machine, so the two could not run
+# side by side. This also keeps the project's own ports contiguous (8014-8016).
+BATCH_PORT = _int("BATCH_PORT", 8014)
 REALTIME_HTTP_PORT = _int("REALTIME_HTTP_PORT", 8015)
 REALTIME_WS_PORT = _int("REALTIME_WS_PORT", 8016)
 

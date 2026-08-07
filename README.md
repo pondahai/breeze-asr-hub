@@ -12,10 +12,14 @@
 
 | 服務 | 埠 | 做什麼 |
 | --- | --- | --- |
-| **批次轉寫 WebUI** | `8013` | 長音檔上傳(分片 + 智慧靜音切割)、字幕輸出 (txt/srt/vtt)、選配 WhisperX 講者分離與 LLM 摘要 |
+| **批次轉寫 WebUI** | `8014` | 長音檔上傳(分片 + 智慧靜音切割)、字幕輸出 (txt/srt/vtt)、選配 WhisperX 講者分離與 LLM 摘要 |
 | **即時聽寫台** | `8015` (HTTP) / `8016` (WS) | 常駐背景 VAD 側錄、即時轉寫推送、10 fps 音壓計、低延遲監聽、選配 webcam 預覽 |
 
 兩者可以同時跑。在 Xavier 上實測雙 `whisper-cli` 併發推理 18.5 秒完成,沒有 OOM。
+
+批次服務用 `8014` 而非 `8013`,是為了讓姊妹專案
+[ggml-breeze-asr-26-webui](https://github.com/pondahai/ggml-breeze-asr-26-webui)(用 `8013`)
+能在同一台機器上並存。用 `.env` 的 `BATCH_PORT` 可以改。
 
 ---
 
@@ -91,8 +95,8 @@ scripts/convert_model.sh --keep-src                    # 保留下載內容供�
 `-m` 參數,沒有卸載/重載的成本。
 
 ```bash
-curl -F file=@meeting.wav -F model=25 localhost:8013/api/transcribe   # 批次:逐次指定
-curl localhost:8013/api/models                                        # 有哪幾顆可用
+curl -F file=@meeting.wav -F model=25 localhost:8014/api/transcribe   # 批次:逐次指定
+curl localhost:8014/api/models                                        # 有哪幾顆可用
 
 curl localhost:8015/api/models                                        # 即時台:目前用哪顆
 curl -X POST -d '{"model":"25"}' localhost:8015/api/model             # 下一段語音起生效
@@ -128,10 +132,10 @@ CUDA 13 的 aarch64 wheel,轉檔正常。)在桌機轉好之後把 `.bin` 複製
 
 ## 使用方法
 
-兩個服務都有網頁介面(批次 `http://<IP>:8013`、即時台 `http://<IP>:8015`),
+兩個服務都有網頁介面(批次 `http://<IP>:8014`、即時台 `http://<IP>:8015`),
 但都是純 HTTP,可以直接當 API 用。
 
-### 批次轉寫 API(`8013`)
+### 批次轉寫 API(`8014`)
 
 | 方法 | 路徑 | 說明 |
 | --- | --- | --- |
@@ -163,13 +167,13 @@ CUDA 13 的 aarch64 wheel,轉檔正常。)在桌機轉好之後把 `.bin` 複製
 ```bash
 # 送出
 JOB=$(curl -sS -F file=@meeting.wav -F model=25 -F format=srt \
-        localhost:8013/api/transcribe | python3 -c 'import sys,json;print(json.load(sys.stdin)["job_id"])')
+        localhost:8014/api/transcribe | python3 -c 'import sys,json;print(json.load(sys.stdin)["job_id"])')
 
 # 輪詢直到 done(status 會是 running / done / failed / cancelled)
-until [ "$(curl -sS localhost:8013/api/jobs/$JOB | python3 -c 'import sys,json;print(json.load(sys.stdin)["status"])')" = done ]; do sleep 5; done
+until [ "$(curl -sS localhost:8014/api/jobs/$JOB | python3 -c 'import sys,json;print(json.load(sys.stdin)["status"])')" = done ]; do sleep 5; done
 
 # 取檔
-curl -sS -o meeting.srt "localhost:8013/api/jobs/$JOB/download?ext=srt"
+curl -sS -o meeting.srt "localhost:8014/api/jobs/$JOB/download?ext=srt"
 ```
 
 `GET /api/jobs/<job_id>` 回傳裡除了 `status` 與 `text`,還有 `model`(這份逐字稿是哪顆
@@ -260,7 +264,7 @@ breeze-asr-hub/
 │   ├── audio.py             麥克風挑選與 PCM 處理
 │   └── calibrate.py         python3 -m breeze_hub.calibrate
 ├── services/
-│   ├── batch/               批次轉寫 WebUI (Flask, 8013)
+│   ├── batch/               批次轉寫 WebUI (Flask, 8014)
 │   └── realtime/            即時聽寫台 (stdlib HTTP + websockets, 8015/8016)
 ├── scripts/
 │   ├── probe_hardware.sh    → hardware.json
