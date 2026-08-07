@@ -91,8 +91,31 @@ elif command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1; then
   HAS_CUDA=true
   GPU_NAME="$(nvidia-smi --query-gpu=name --format=csv,noheader | head -n1)"
   VRAM_MB="$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | head -n1)"
-  GPU_VRAM_GB=$(( VRAM_MB / 1024 ))
-  say "gpu       : ${GPU_NAME} (${GPU_VRAM_GB} GB VRAM)"
+  # Unified-memory parts report [N/A] here rather than a number -- a GB10 (DGX
+  # Spark) does, and it is not a Jetson so it does not take the branch above.
+  # Feeding that to $(( )) aborts the probe, so fall back to system RAM, which
+  # is what the GPU is actually sharing.
+  case "${VRAM_MB}" in
+    ''|*[!0-9]*)
+      GPU_VRAM_GB="${MEM_GB}"
+      say "gpu       : ${GPU_NAME} (shared ${GPU_VRAM_GB} GB, unified memory)"
+      ;;
+    *)
+      GPU_VRAM_GB=$(( VRAM_MB / 1024 ))
+      say "gpu       : ${GPU_NAME} (${GPU_VRAM_GB} GB VRAM)"
+      ;;
+  esac
+  # Ask the driver for the compute capability rather than leaving cmake to
+  # guess. Its built-in detection does not know architectures newer than the
+  # CUDA toolkit it shipped against, which is how a GB10 (sm_121) ends up
+  # built for the wrong target.
+  if [ -z "${CUDA_ARCH}" ]; then
+    COMPUTE_CAP="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -n1 | tr -d '. ')"
+    case "${COMPUTE_CAP}" in
+      ''|*[!0-9]*) ;;
+      *) CUDA_ARCH="${COMPUTE_CAP}"; say "cuda arch : sm_${CUDA_ARCH}" ;;
+    esac
+  fi
 fi
 
 if [ "${HAS_CUDA}" = true ]; then
