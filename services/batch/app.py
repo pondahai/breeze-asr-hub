@@ -484,12 +484,52 @@ def job_cancel(job_id):
                 
     return jsonify({'ok': True, 'status': 'cancelled'})
 
+def llm_server_models():
+    """Ask the LLM server what it serves. [] when it is unreachable.
+
+    The list is whatever is behind LLM_API_URL -- llama.cpp, vLLM, Ollama's
+    OpenAI shim -- so it cannot be a fixed table the way the ASR variants are.
+    """
+    try:
+        r = requests.get(f"{LLM_API_URL}/v1/models", timeout=3)
+        if r.status_code == 200:
+            return [m.get('id') for m in r.json().get('data', []) if m.get('id')]
+    except Exception:
+        pass
+    return []
+
+
+def resolve_llm_model(requested=''):
+    """Pick the model id to send. Explicit > configured > whatever is served."""
+    requested = (requested or '').strip()
+    if requested:
+        return requested
+    if config.LLM_MODEL_NAME:
+        return config.LLM_MODEL_NAME
+    served = llm_server_models()
+    return served[0] if served else ''
+
+
+@app.get('/api/llm/models')
+def llm_models():
+    """Models the configured LLM server currently offers."""
+    served = llm_server_models()
+    return jsonify({
+        'ok': bool(served),
+        'models': served,
+        'default': resolve_llm_model(),
+        'configured': config.LLM_MODEL_NAME,
+        'api_url': LLM_API_URL,
+    })
+
+
 @app.post('/api/llm')
 def llm_process():
     data = request.get_json(force=True)
     text = data.get('text', '').strip()
     action = data.get('action', 'proofread')
     custom_prompt = data.get('custom_prompt', '').strip()
+    model = resolve_llm_model(data.get('model', ''))
     
     if not text:
         return jsonify({'ok': False, 'error': '文字內容不可為空'}), 400
@@ -510,8 +550,13 @@ def llm_process():
         {"role": "user", "content": text}
     ]
     
+    if not model:
+        return jsonify({'ok': False, 'error':
+                        f'LLM 伺服器沒有回報任何模型（{LLM_API_URL}）。'
+                        '請確認服務已啟動，或在 .env 設定 LLM_MODEL_NAME。'}), 503
+
     payload = {
-        "model": "gemma-4-e2b-it",
+        "model": model,
         "messages": messages,
         "temperature": 0.3,
         "stream": True
@@ -550,13 +595,13 @@ def llm_process():
 
 @app.route('/api/llm/health')
 def llm_health():
-    try:
-        r = requests.get(f"{LLM_API_URL}/v1/models", timeout=3)
-        if r.status_code == 200:
-            return jsonify({'ok': True, 'status': 'online', 'model': 'gemma-4'})
-    except Exception as e:
-        pass
-    return jsonify({'ok': False, 'status': 'offline'})
+    served = llm_server_models()
+    if served:
+        # Report what is actually being served rather than a name baked in at
+        # write time -- this used to always say "gemma-4".
+        return jsonify({'ok': True, 'status': 'online',
+                        'model': resolve_llm_model(), 'models': served})
+    return jsonify({'ok': False, 'status': 'offline', 'api_url': LLM_API_URL})
 
 if __name__ == '__main__':
     host, port = config.HOST, config.BATCH_PORT

@@ -465,8 +465,13 @@
 
     <!-- Right Column: AI Secretary Panel -->
     <div class="card" id="ai-panel">
-      <h2>🧠 AI 秘書自動整理 (Gemma-4 本地大模型)</h2>
-      
+      <h2>🧠 AI 秘書自動整理</h2>
+
+      <div class="input-group" id="llm-model-group" style="display:none;">
+        <label for="llm-model">語言模型</label>
+        <select id="llm-model"></select>
+      </div>
+
       <div class="input-group">
         <label>快速整理指令</label>
         <div class="llm-grid">
@@ -805,9 +810,15 @@ btnGo.onclick=async()=>{
         const response = await fetch('/api/llm', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text, action, custom_prompt: customPrompt })
+          body: JSON.stringify({ text, action, custom_prompt: customPrompt,
+                                 model: document.getElementById('llm-model').value || undefined })
         });
-        
+
+        if (!response.ok) {
+          const err = await response.json().catch(() => ({}));
+          throw new Error(err.error || `伺服器回應 ${response.status}`);
+        }
+
         if (!response.body) {
           throw new Error('瀏覽器不支援 Streaming 讀取。');
         }
@@ -869,23 +880,41 @@ btnGo.onclick=async()=>{
       }
     }
 
-    // Check LLM service health on load
+    // Check LLM service health on load, and offer whatever it actually serves.
+    // The model list comes from the server rather than a fixed table -- what is
+    // behind LLM_API_URL could be llama.cpp, vLLM or anything OpenAI-shaped.
     async function checkLLMHealth() {
       const llmDot = document.getElementById('llm-dot');
       const llmStatus = document.getElementById('llm-status');
+      const sel = document.getElementById('llm-model');
+      const grp = document.getElementById('llm-model-group');
+      const short = id => id.includes('/') ? id.split('/').pop() : id;
       try {
         const r = await fetch('/api/llm/health');
         const j = await r.json();
         if (j.ok && j.status === 'online') {
           llmDot.className = 'dot';
-          llmStatus.textContent = 'Gemma-4: 18082 (Online)';
+          llmStatus.textContent = `LLM: ${short(j.model || '?')} (Online)`;
+          sel.innerHTML = '';
+          (j.models || []).forEach(id => {
+            const o = document.createElement('option');
+            o.value = id;
+            o.textContent = short(id);
+            o.title = id;
+            o.selected = (id === j.model);
+            sel.appendChild(o);
+          });
+          // One model is not a choice; only show the control when it is.
+          grp.style.display = (j.models || []).length > 1 ? '' : 'none';
         } else {
           llmDot.className = 'dot yellow';
-          llmStatus.textContent = 'Gemma-4: 18082 (Offline)';
+          llmStatus.textContent = `LLM: ${j.api_url || ''} (Offline)`;
+          grp.style.display = 'none';
         }
       } catch(e) {
         llmDot.className = 'dot yellow';
-        llmStatus.textContent = 'Gemma-4: 18082 (Error)';
+        llmStatus.textContent = 'LLM: (Error)';
+        grp.style.display = 'none';
       }
     }
 
