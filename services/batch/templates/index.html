@@ -410,6 +410,13 @@
       </div>
 
       <div class="row">
+        <div class="input-group" id="model-group" style="flex: 1; min-width: 160px; display:none;">
+          <label for="model">辨識模型</label>
+          <select id="model"></select>
+        </div>
+      </div>
+
+      <div class="row">
         <div class="input-group" style="flex: 1; min-width: 140px;">
           <label for="format">儲存格式</label>
           <select id="format">
@@ -570,10 +577,31 @@
       btnCancel.disabled=!b; 
     }
 
+// Only offer variants that are actually converted on this machine -- picking a
+// missing one would fail after the upload has already finished.
+(async()=>{
+  try{
+    const r = await fetch('/api/models');
+    const d = await r.json();
+    if(!d.ok || !d.models || d.models.length < 2) return;   // nothing to choose
+    const sel = document.getElementById('model');
+    d.models.forEach(m=>{
+      const o = document.createElement('option');
+      o.value = m.variant;
+      o.textContent = `Breeze ASR ${m.variant} — ${m.summary}`;
+      o.selected = m.default;
+      sel.appendChild(o);
+    });
+    document.getElementById('model-group').style.display = '';
+  }catch(e){ /* leave it hidden and let the server use its default */ }
+})();
+
 btnGo.onclick=async()=>{
   const f=document.getElementById('file').files[0];
   const fmt=document.getElementById('format').value;
   const maxLen=document.getElementById('max_len').value;
+  const modelGroup=document.getElementById('model-group');
+  const model=(modelGroup.style.display!=='none') ? document.getElementById('model').value : '';
   if(!f){alert('請先選音檔');return}
   
   statusCard.style.display = 'block';
@@ -631,6 +659,7 @@ btnGo.onclick=async()=>{
   fd2.append('upload_id', uploadId);
   fd2.append('filename', f.name);
   fd2.append('format', fmt);
+  if (model) fd2.append('model', model);
   fd2.append('max_len', maxLen);
   fd2.append('use_whisperx', useWhisperxEl.checked ? 'true' : 'false');
   if (useWhisperxEl.checked) {
