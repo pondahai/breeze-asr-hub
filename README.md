@@ -172,7 +172,7 @@ until [ "$(curl -sS localhost:8013/api/jobs/$JOB | python3 -c 'import sys,json;p
 curl -sS -o meeting.srt "localhost:8013/api/jobs/$JOB/download?ext=srt"
 ```
 
-`GET /api/jobs/<id>` 回傳裡除了 `status` 與 `text`,還有 `model`(這份逐字稿是哪顆
+`GET /api/jobs/<job_id>` 回傳裡除了 `status` 與 `text`,還有 `model`(這份逐字稿是哪顆
 模型轉的)、`elapsed_sec` 與 `log_tail`(whisper-cli 的即時輸出,可直接顯示進度)。
 
 **大檔請走分片上傳。** 直接 POST 幾百 MB 容易在反向代理或瀏覽器端斷掉。作法是先
@@ -180,7 +180,7 @@ curl -sS -o meeting.srt "localhost:8013/api/jobs/$JOB/download?ext=srt"
 `chunk_index`),全部送完後再 `POST /api/transcribe`,這次不帶 `file`,改帶
 `upload_id` 與 `filename`,伺服器會自己組裝。網頁介面就是這樣做的。
 
-### 即時聽寫台 API(`8015` HTTP / `8016` WebSocket`)
+### 即時聽寫台 API(`8015` HTTP / `8016` WebSocket)
 
 | 方法 | 路徑 | 說明 |
 | --- | --- | --- |
@@ -190,8 +190,13 @@ curl -sS -o meeting.srt "localhost:8013/api/jobs/$JOB/download?ext=srt"
 | `POST` | `/api/model` | 切換模型,`{"model":"25"}`,下一段語音生效 |
 | `GET` | `/video_frame` | 單張 webcam JPEG(沒鏡頭時 404) |
 
-即時結果從 WebSocket(`ws://<IP>:8016`)推送,訊息是 JSON,`type` 有
-`status`(狀態與音壓)與 `transcription`(一段轉寫完成)。
+即時結果從 WebSocket(`ws://<IP>:8016`)推送,訊息是 JSON,`type` 有三種:
+
+| `type` | 內容 |
+| --- | --- |
+| `status` | 目前狀態(`LISTENING` / `TRANSCRIBING` 等)與音壓值 |
+| `transcription` | 一段語音轉寫完成,含文字、時間與長度 |
+| `frame` | webcam 影格(沒鏡頭或 `CAMERA_ENABLED=0` 時不會出現) |
 
 啟動前建議先校正 VAD 門檻,否則會一直誤觸發或完全不觸發:
 
