@@ -146,8 +146,36 @@ CUDA 13 的 aarch64 wheel,轉檔正常。)在桌機轉好之後把 `.bin` 複製
 | `POST` | `/api/upload_chunk` | 分片上傳(大檔用,見下) |
 | `GET` | `/api/models` | 有哪幾顆模型可用 |
 | `GET` | `/api/system/capabilities` | 本機探測到的能力 |
-| `POST` | `/api/llm` | 把逐字稿丟給下游 LLM 處理(需設定 `LLM_API_URL`) |
-| `GET` | `/api/llm/health` | 下游 LLM 是否活著 |
+| `POST` | `/api/llm` | 把逐字稿丟給下游 LLM 處理 |
+| `POST` | `/api/llm/models` | 某台 LLM 伺服器提供哪些模型 |
+| `GET` | `/api/llm/health` | 預設 LLM 位址是否活著 |
+
+#### AI 秘書的 LLM 設定
+
+用哪台 LLM、哪顆模型、要不要金鑰,是**使用者的偏好而非這台機器的屬性**,所以網頁上
+可以設定,並存在瀏覽器裡(`localStorage`),重新整理仍然保留。`.env` 的
+`LLM_API_URL` / `LLM_MODEL_NAME` / `LLM_API_KEY` 只是「這個瀏覽器沒設定過」時的起點。
+
+`/api/llm` 與 `/api/llm/models` 都接受三個選填欄位:
+
+| 欄位 | 說明 |
+| --- | --- |
+| `api_url` | LLM 伺服器位址。只接受 `http://` 或 `https://` |
+| `api_key` | 選填。空的就不送 `Authorization` 標頭 |
+| `model` | 模型 id。伺服器已經沒有這顆時會自動退回可用的那顆 |
+
+查詢模型走 **POST 而非 GET**,因為金鑰不該出現在 query string —— 那會被寫進伺服器
+access log、反向代理紀錄與瀏覽器歷史。回應中也不會回傳金鑰。
+
+```bash
+curl -X POST -H 'Content-Type: application/json' \
+     -d '{"api_url":"http://127.0.0.1:8002"}' \
+     localhost:8014/api/llm/models
+```
+
+這些查詢由本服務代為送出,而不是瀏覽器直連:區域網路上的 OpenAI 相容伺服器多半不送
+CORS 標頭,瀏覽器直連會在位址正確的情況下失敗,看起來像「位址填錯」,幾乎無從排查。
+**因此 `api_url` 是「從跑這個服務的機器看出去」的位址。**
 
 `POST /api/transcribe` 吃 multipart 表單:
 
