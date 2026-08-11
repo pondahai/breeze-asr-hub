@@ -153,6 +153,16 @@ def asr_worker():
             state["last_transcription"] = text
             broadcast(entry)
 
+            # Keep a durable copy so the console can show transcriptions from
+            # before the current process started. Best effort: a full disk must
+            # not take the transcription down with it.
+            try:
+                history_path = config.HISTORY_PATH
+                with open(history_path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            except OSError:
+                pass
+
         set_status("LISTENING")
 
         try:
@@ -350,6 +360,25 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 "model": current_model()[0],
                 "models": config.available_models(),
             }).encode("utf-8")
+            self._send(200, "application/json; charset=utf-8", body)
+
+        elif path == "/api/history":
+            # Newest first, to match /api/transcriptions and the feed order.
+            history_data = []
+            history_path = config.HISTORY_PATH
+            if history_path.exists():
+                try:
+                    with open(history_path, "r", encoding="utf-8") as f:
+                        for line in f:
+                            line = line.strip()
+                            if line:
+                                try:
+                                    history_data.insert(0, json.loads(line))
+                                except ValueError:
+                                    pass
+                except OSError:
+                    pass
+            body = json.dumps(history_data, ensure_ascii=False).encode("utf-8")
             self._send(200, "application/json; charset=utf-8", body)
 
         elif path == "/api/models":
