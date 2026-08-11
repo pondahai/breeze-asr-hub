@@ -202,6 +202,11 @@ VAD_MAX_HISTORY = _int("VAD_MAX_HISTORY", 200)
 # The durable transcription log. Deliberately not under WORK_DIR: that holds
 # scratch wavs that anything is free to clean out.
 HISTORY_PATH = _path("HISTORY_PATH", "var/history.jsonl")
+# Rotated once it passes this size, keeping HISTORY_KEEP older generations
+# beside it (history.jsonl.1, .2, ...). Set HISTORY_KEEP=0 to discard on
+# rotation instead of keeping anything.
+HISTORY_MAX_BYTES = _int("HISTORY_MAX_BYTES", 5 * 1024 * 1024)
+HISTORY_KEEP = _int("HISTORY_KEEP", 3)
 
 # --- Camera -----------------------------------------------------------------
 

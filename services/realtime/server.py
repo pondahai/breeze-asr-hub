@@ -105,6 +105,48 @@ def set_current_model(variant):
     return path
 
 
+def rotate_history():
+    """Shift history.jsonl to .1, .1 to .2, and so on, dropping the oldest.
+
+    Called only once the log is over the limit, so the cost lands on one
+    transcription every few thousand rather than on every one.
+    """
+    path = config.HISTORY_PATH
+    keep = config.HISTORY_KEEP
+    if keep < 1:
+        path.unlink()
+        return
+    oldest = path.with_name(path.name + "." + str(keep))
+    if oldest.exists():
+        oldest.unlink()
+    for n in range(keep - 1, 0, -1):
+        older = path.with_name(path.name + "." + str(n))
+        if older.exists():
+            older.rename(path.with_name(path.name + "." + str(n + 1)))
+    path.rename(path.with_name(path.name + ".1"))
+
+
+def append_history(entry):
+    """Append one entry to the durable log, rotating it when it grows too big.
+
+    Best effort throughout: a full disk, or a log we cannot rotate, must not
+    take the transcription down with it.
+    """
+    path = config.HISTORY_PATH
+    try:
+        if config.HISTORY_MAX_BYTES > 0 and path.exists() \
+                and path.stat().st_size >= config.HISTORY_MAX_BYTES:
+            rotate_history()
+    except OSError as exc:
+        print("[history] rotation failed, appending anyway: {}".format(exc))
+
+    try:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError as exc:
+        print("[history] append failed: {}".format(exc))
+
+
 def asr_worker():
     while True:
         item = asr_queue.get()
@@ -153,15 +195,7 @@ def asr_worker():
             state["last_transcription"] = text
             broadcast(entry)
 
-            # Keep a durable copy so the console can show transcriptions from
-            # before the current process started. Best effort: a full disk must
-            # not take the transcription down with it.
-            try:
-                history_path = config.HISTORY_PATH
-                with open(history_path, "a", encoding="utf-8") as f:
-                    f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-            except OSError:
-                pass
+            append_history(entry)
 
         set_status("LISTENING")
 
