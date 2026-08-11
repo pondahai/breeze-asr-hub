@@ -19,6 +19,8 @@ import json
 import os
 import pathlib
 import queue
+import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -147,6 +149,120 @@ def append_history(entry):
         print("[history] append failed: {}".format(exc))
 
 
+DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def audio_day(entry_id):
+    """The day directory an entry belongs to, derived from its millisecond id.
+
+    Deriving it rather than storing it keeps /api/audio a pure function of the
+    id the console already has, with no lookup table to keep in step.
+    """
+    return time.strftime("%Y-%m-%d", time.localtime(entry_id / 1000.0))
+
+
+def audio_path(entry_id):
+    return config.AUDIO_DIR / audio_day(entry_id) / (str(entry_id) + ".flac")
+
+
+def save_audio(entry_id, wav_path):
+    """Transcode one segment to FLAC. Returns True when the file is there.
+
+    Lossless, so what plays back is the signal the ASR actually saw, at about
+    half the size of the wav. Best effort: losing the recording must not lose
+    the transcription with it.
+    """
+    if not config.AUDIO_ENABLED:
+        return False
+    dest = audio_path(entry_id)
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        result = subprocess.run(
+            ["ffmpeg", "-nostdin", "-loglevel", "error", "-y",
+             "-i", str(wav_path), "-c:a", "flac", str(dest)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if result.returncode != 0:
+            print("[audio] ffmpeg exited {}: {}".format(
+                result.returncode,
+                result.stderr.decode("utf-8", "replace").strip()[-300:]))
+            return False
+    except OSError as exc:
+        print("[audio] cannot record {}: {}".format(dest, exc))
+        return False
+    return dest.exists()
+
+
+def audio_usage():
+    """Per-day file count and size, newest day first, plus what is free."""
+    days = []
+    total_bytes = 0
+    total_files = 0
+    root = config.AUDIO_DIR
+    if root.exists():
+        for day in sorted(root.iterdir(), reverse=True):
+            if not day.is_dir() or not DAY_RE.match(day.name):
+                continue
+            day_bytes = 0
+            day_files = 0
+            for f in day.iterdir():
+                try:
+                    day_bytes += f.stat().st_size
+                    day_files += 1
+                except OSError:
+                    pass
+            days.append({"date": day.name, "files": day_files, "bytes": day_bytes})
+            total_bytes += day_bytes
+            total_files += day_files
+
+    free_bytes = 0
+    try:
+        st = os.statvfs(str(root))
+        free_bytes = st.f_bavail * st.f_frsize
+    except OSError:
+        pass
+
+    return {
+        "dir": str(root),
+        "days": days,
+        "total_bytes": total_bytes,
+        "total_files": total_files,
+        "free_bytes": free_bytes,
+        "enabled": config.AUDIO_ENABLED,
+    }
+
+
+def delete_audio_before(date_str):
+    """Drop whole day directories older than date_str (exclusive).
+
+    Whole directories only, and only ones named like a date, so a bad
+    parameter can never reach outside the recordings.
+    """
+    if not DAY_RE.match(date_str):
+        raise ValueError("expected a YYYY-MM-DD date")
+    root = config.AUDIO_DIR
+    deleted_days = 0
+    deleted_files = 0
+    freed_bytes = 0
+    if not root.exists():
+        return {"deleted_days": 0, "deleted_files": 0, "freed_bytes": 0}
+    for day in sorted(root.iterdir()):
+        if not day.is_dir() or not DAY_RE.match(day.name):
+            continue
+        if day.name >= date_str:
+            continue
+        for f in day.iterdir():
+            try:
+                freed_bytes += f.stat().st_size
+                deleted_files += 1
+            except OSError:
+                pass
+        shutil.rmtree(str(day), ignore_errors=True)
+        deleted_days += 1
+    return {"deleted_days": deleted_days,
+            "deleted_files": deleted_files,
+            "freed_bytes": freed_bytes}
+
+
 def asr_worker():
     while True:
         item = asr_queue.get()
@@ -190,6 +306,7 @@ def asr_worker():
                 "duration": round(duration, 1),
                 "cuda_time": round(elapsed, 2),
             }
+            entry["audio"] = save_audio(entry["id"], wav_path)
             state["transcriptions"].insert(0, entry)
             del state["transcriptions"][config.VAD_MAX_HISTORY:]
             state["last_transcription"] = text
@@ -352,7 +469,28 @@ class ConsoleHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = self.path.split("?", 1)[0]
 
-        if path == "/api/model":
+        if path == "/api/storage/delete":
+            length = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(length) if length else b"{}"
+            try:
+                before = str(json.loads(raw.decode("utf-8") or "{}").get("before", "")).strip()
+            except ValueError:
+                self._json(400, {"ok": False, "error": "malformed JSON"})
+                return
+            try:
+                freed = delete_audio_before(before)
+            except ValueError as exc:
+                self._json(400, {"ok": False, "error": str(exc)})
+                return
+            except OSError as exc:
+                self._json(500, {"ok": False, "error": str(exc)})
+                return
+            print("[audio] deleted {} day(s), {} file(s) before {}".format(
+                freed["deleted_days"], freed["deleted_files"], before))
+            freed["ok"] = True
+            self._json(200, freed)
+
+        elif path == "/api/model":
             length = int(self.headers.get("Content-Length") or 0)
             raw = self.rfile.read(length) if length else b"{}"
             try:
@@ -395,6 +533,20 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 "models": config.available_models(),
             }).encode("utf-8")
             self._send(200, "application/json; charset=utf-8", body)
+
+        elif path.startswith("/api/audio/"):
+            raw = path[len("/api/audio/"):]
+            if not raw.isdigit():
+                self._send(404, "text/plain")
+                return
+            recording = audio_path(int(raw))
+            if not recording.exists():
+                self._send(404, "text/plain")
+                return
+            self._send(200, "audio/flac", recording.read_bytes())
+
+        elif path == "/api/storage":
+            self._json(200, audio_usage())
 
         elif path == "/api/history":
             # Newest first, to match /api/transcriptions and the feed order.

@@ -291,6 +291,42 @@
     .close-btn { color: #aaa; font-size: 28px; font-weight: bold; cursor: pointer; }
     .close-btn:hover { color: #fff; }
     .history-list { overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
+
+    /* Transcription text and its play button sit on one row, the button
+       hugging the right edge of the bubble. */
+    .msg-row { display: flex; align-items: flex-start; gap: 10px; }
+    .msg-row .msg-text { flex: 1; }
+    .play-btn {
+      flex: none; width: 34px; height: 34px; border-radius: 50%;
+      border: 1px solid var(--border); background: rgba(0, 240, 255, 0.08);
+      color: var(--accent); font-size: 0.85rem; cursor: pointer; line-height: 1;
+    }
+    .play-btn:hover:not(:disabled) { background: rgba(0, 240, 255, 0.2); }
+    .play-btn:disabled { opacity: 0.3; cursor: default; }
+    .play-btn.playing { background: var(--accent); color: var(--bg); }
+
+    .usage-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+    .usage-table th, .usage-table td {
+      text-align: left; padding: 6px 8px;
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+    }
+    .usage-table th { color: var(--text-sub); font-weight: 500; }
+    .usage-table td.num { text-align: right; font-family: 'JetBrains Mono', monospace; }
+    .usage-bar { height: 6px; border-radius: 3px; background: var(--accent); min-width: 2px; }
+    .usage-summary {
+      display: flex; gap: 20px; flex-wrap: wrap; margin-bottom: 14px;
+      font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;
+    }
+    .usage-summary b { color: var(--accent); font-weight: 600; }
+    .purge-row {
+      display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+      border-top: 1px solid rgba(255,255,255,0.08); padding-top: 14px; margin-top: 14px;
+    }
+    .purge-row input[type="date"] {
+      background: rgba(0,0,0,0.3); color: var(--text); font-family: inherit;
+      border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px;
+    }
+    .btn-danger { border-color: rgba(255, 51, 102, 0.5); color: var(--red); }
   </style>
 </head>
 <body>
@@ -354,6 +390,7 @@
           <span class="feed-title">REAL-TIME TRANSCRIPTIONS</span>
           <div class="feed-actions">
             <button class="btn" onclick="fetchHistory()">HISTORY</button>
+            <button class="btn" onclick="fetchStorage()">STORAGE</button>
             <button class="btn" onclick="copyAllText()">COPY ALL</button>
             <button class="btn" onclick="clearFeed()">CLEAR</button>
           </div>
@@ -376,6 +413,17 @@
         <span class="close-btn" onclick="document.getElementById('historyModal').style.display='none'">&times;</span>
       </div>
       <div class="history-list" id="historyList">Loading...</div>
+    </div>
+  </div>
+
+  <!-- Recording storage dashboard -->
+  <div id="storageModal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <span class="modal-title">RECORDING STORAGE</span>
+        <span class="close-btn" onclick="document.getElementById('storageModal').style.display='none'">&times;</span>
+      </div>
+      <div id="storageBody" class="history-list">Loading...</div>
     </div>
   </div>
 
@@ -566,7 +614,7 @@
 
       var bubble = document.createElement('div');
       bubble.className = 'msg-bubble';
-      bubble.innerHTML = '<div class="msg-meta"><span>TIME: ' + item.time + '</span><span>AUDIO DURATION: ' + item.duration + 's</span><span>CUDA TIME: ' + item.cuda_time + 's</span></div><div class="msg-text">' + escapeHtml(item.text) + '</div>';
+      bubble.innerHTML = '<div class="msg-meta"><span>TIME: ' + item.time + '</span><span>AUDIO DURATION: ' + item.duration + 's</span><span>CUDA TIME: ' + item.cuda_time + 's</span></div><div class="msg-row"><div class="msg-text">' + escapeHtml(item.text) + '</div>' + playButton(item) + '</div>';
       feedList.insertBefore(bubble, feedList.firstChild);
     }
 
@@ -587,6 +635,118 @@
       navigator.clipboard.writeText(texts.join(nl)).then(function() { alert('Copied all text to clipboard'); });
     }
 
+    // One player for the whole console: starting a clip stops the previous
+    // one, so two recordings can never talk over each other.
+    var player = null;
+    var playingBtn = null;
+
+    // Entries recorded before playback existed carry no audio flag, so the
+    // button is shown disabled rather than hidden -- the row stays aligned and
+    // it is obvious why it cannot be played.
+    function playButton(item) {
+      if (!item.audio) {
+        return '<button class="play-btn" disabled title="No recording for this entry">&#9654;</button>';
+      }
+      return '<button class="play-btn" onclick="playAudio(' + item.id + ', this)" title="Play the recording">&#9654;</button>';
+    }
+
+    function stopPlayback() {
+      if (player) { player.pause(); player = null; }
+      if (playingBtn) {
+        playingBtn.classList.remove('playing');
+        playingBtn.innerHTML = '&#9654;';
+        playingBtn = null;
+      }
+    }
+
+    function playAudio(id, btn) {
+      var wasPlaying = (playingBtn === btn);
+      stopPlayback();
+      if (wasPlaying) return;
+
+      player = new Audio('/api/audio/' + id);
+      playingBtn = btn;
+      btn.classList.add('playing');
+      btn.innerHTML = '&#9646;&#9646;';
+      player.onended = stopPlayback;
+      player.onerror = function() {
+        stopPlayback();
+        btn.disabled = true;
+        btn.title = 'Recording is gone';
+      };
+      player.play();
+    }
+
+    function formatBytes(n) {
+      var units = ['B', 'KB', 'MB', 'GB', 'TB'];
+      var i = 0;
+      while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+      return n.toFixed(i === 0 ? 0 : 1) + ' ' + units[i];
+    }
+
+    async function fetchStorage() {
+      document.getElementById('storageModal').style.display = 'block';
+      var body = document.getElementById('storageBody');
+      body.innerHTML = '<div class="empty-tip">Loading...</div>';
+      try {
+        var res = await fetch('/api/storage');
+        var data = await res.json();
+
+        var html = '<div class="usage-summary">' +
+          '<span>RECORDINGS <b>' + data.total_files + '</b></span>' +
+          '<span>ON DISK <b>' + formatBytes(data.total_bytes) + '</b></span>' +
+          '<span>FREE <b>' + formatBytes(data.free_bytes) + '</b></span>' +
+          '<span>DAYS <b>' + data.days.length + '</b></span>' +
+          '</div>';
+        html += '<div style="font-size:0.75rem;color:var(--text-sub);margin-bottom:12px;word-break:break-all;">' +
+          escapeHtml(data.dir) + (data.enabled ? '' : ' (recording disabled)') + '</div>';
+
+        if (data.days.length === 0) {
+          html += '<div class="empty-tip">No recordings yet.</div>';
+        } else {
+          var biggest = 0;
+          data.days.forEach(function(d) { if (d.bytes > biggest) biggest = d.bytes; });
+          html += '<table class="usage-table"><tr><th>DATE</th><th class="num">FILES</th><th class="num">SIZE</th><th style="width:35%"></th></tr>';
+          data.days.forEach(function(d) {
+            var pct = biggest ? Math.max(2, Math.round(d.bytes / biggest * 100)) : 2;
+            html += '<tr><td>' + d.date + '</td><td class="num">' + d.files + '</td><td class="num">' +
+              formatBytes(d.bytes) + '</td><td><div class="usage-bar" style="width:' + pct + '%"></div></td></tr>';
+          });
+          html += '</table>';
+        }
+
+        html += '<div class="purge-row">' +
+          '<span style="color:var(--text-sub);font-size:0.85rem;">Delete recordings before</span>' +
+          '<input type="date" id="purgeBefore" value="' + (data.days.length ? data.days[0].date : '') + '">' +
+          '<button class="btn btn-danger" onclick="purgeBefore()">DELETE</button>' +
+          '</div>';
+
+        body.innerHTML = html;
+      } catch (e) {
+        body.innerHTML = '<div class="empty-tip">Error loading storage usage.</div>';
+      }
+    }
+
+    async function purgeBefore() {
+      var before = document.getElementById('purgeBefore').value;
+      if (!before) { alert('Pick a date first.'); return; }
+      if (!confirm('Delete every recording from before ' + before + '?\n\nThe transcriptions stay; only the audio goes. This cannot be undone.')) return;
+      try {
+        var res = await fetch('/api/storage/delete', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({before: before})
+        });
+        var data = await res.json();
+        if (!data.ok) { alert('Delete failed: ' + (data.error || 'unknown error')); return; }
+        alert('Deleted ' + data.deleted_files + ' recording(s) across ' +
+              data.deleted_days + ' day(s), freeing ' + formatBytes(data.freed_bytes) + '.');
+        fetchStorage();
+      } catch (e) {
+        alert('Delete failed.');
+      }
+    }
+
     async function fetchHistory() {
       document.getElementById('historyModal').style.display = 'block';
       document.getElementById('historyList').innerHTML = '<div class="empty-tip">Loading...</div>';
@@ -595,7 +755,7 @@
         var data = await res.json();
         var html = '';
         data.forEach(function(item) {
-          html += '<div class="msg-bubble"><div class="msg-meta"><span>TIME: ' + item.time + '</span><span>DUR: ' + item.duration + 's</span></div><div class="msg-text">' + escapeHtml(item.text) + '</div></div>';
+          html += '<div class="msg-bubble"><div class="msg-meta"><span>TIME: ' + item.time + '</span><span>DUR: ' + item.duration + 's</span></div><div class="msg-row"><div class="msg-text">' + escapeHtml(item.text) + '</div>' + playButton(item) + '</div></div>';
         });
         if (data.length === 0) html = '<div class="empty-tip">No history found.</div>';
         document.getElementById('historyList').innerHTML = html;

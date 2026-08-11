@@ -208,6 +208,14 @@ HISTORY_PATH = _path("HISTORY_PATH", "var/history.jsonl")
 HISTORY_MAX_BYTES = _int("HISTORY_MAX_BYTES", 5 * 1024 * 1024)
 HISTORY_KEEP = _int("HISTORY_KEEP", 3)
 
+# Every segment the VAD hands to the ASR is also kept as FLAC, one directory
+# per day, so that a transcription can be played back against what was
+# actually heard. Nothing here expires on its own: a box with a big disk
+# should keep everything, and what to delete is a judgement call the console
+# hands to whoever is looking at it.
+AUDIO_ENABLED = _bool("AUDIO_ENABLED", True)
+AUDIO_DIR = _path("AUDIO_DIR", "var/audio")
+
 # --- Camera -----------------------------------------------------------------
 
 CAMERA_ENABLED = _bool("CAMERA_ENABLED", True)
@@ -245,7 +253,7 @@ def capability(name, default=False):
 
 def ensure_dirs():
     for directory in (UPLOAD_DIR, RESULT_DIR, LOG_DIR, WORK_DIR,
-                      HISTORY_PATH.parent):
+                      HISTORY_PATH.parent, AUDIO_DIR):
         directory.mkdir(parents=True, exist_ok=True)
 
 
