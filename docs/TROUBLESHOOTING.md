@@ -103,12 +103,29 @@ scripts/service.sh logs realtime
 
 ## 磁碟被吃滿
 
-`var/` 底下是執行時產生的:上傳暫存、轉寫結果、日誌。即時聽寫的音檔切段轉寫完
-就刪除,但批次服務的結果會留著。
+`var/` 底下是執行時產生的:上傳暫存、轉寫結果、日誌、逐字稿留存與錄音。
 
 ```bash
 du -sh var/*
 ```
 
+最會長大的是**錄音**(`AUDIO_DIR`,預設 `var/audio`)。VAD 切出來的 wav 轉寫完仍會
+刪除,但另存的 FLAC 會留著,而且**刻意不自動過期**。清理方式是打開聽寫台的
+**STORAGE**,那裡有逐日用量與磁碟剩餘,選一個日期刪掉之前的;或直接呼叫 API:
+
+```bash
+curl -X POST http://localhost:8015/api/storage/delete \
+     -H 'Content-Type: application/json' -d '{"before":"2026-08-01"}'
+```
+
+只想釋放空間而不想再錄,在 `.env` 設 `AUDIO_ENABLED=false`,逐字稿照常運作。
+
+`history.jsonl` 不需要管,超過 `HISTORY_MAX_BYTES` 就自己輪替。
+
 需要放到別的磁碟時,在 `.env` 用絕對路徑改 `UPLOAD_DIR` / `RESULT_DIR` /
-`LOG_DIR` / `WORK_DIR`。
+`LOG_DIR` / `WORK_DIR` / `HISTORY_PATH` / `AUDIO_DIR`。根目錄不寬裕的機器尤其該把
+`AUDIO_DIR` 移走 —— Jetson 就是指到 SD 卡:
+
+```bash
+AUDIO_DIR=/media/nvidia/sd/breeze-asr-audio
+```

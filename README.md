@@ -49,6 +49,16 @@ scripts/service.sh install
 scripts/service.sh status
 ```
 
+沒有 root 的機器加 `--user`,unit 會裝到 `~/.config/systemd/user` 而不是
+`/etc/systemd/system`:
+
+```bash
+scripts/service.sh install realtime --user
+```
+
+這種 unit 在帳號沒有 lingering 時登出就停、開機也不會起,所以安裝時會檢查並提示
+`sudo loginctl enable-linger <你的帳號>`。
+
 ### 模型
 
 MediaTek 發佈了兩顆 Breeze ASR,調校目標不同,而且**哪顆比較好取決於講的是什麼**,
@@ -220,6 +230,10 @@ curl -sS -o meeting.srt "localhost:8014/api/jobs/$JOB/download?ext=srt"
 | `GET` | `/api/transcriptions` | 目前累積的逐字稿 |
 | `GET` | `/api/models` | 可用模型與目前使用中的那顆 |
 | `POST` | `/api/model` | 切換模型,`{"model":"25"}`,下一段語音生效 |
+| `GET` | `/api/history` | 歷來逐字稿(重開服務也還在),最新的排前面 |
+| `GET` | `/api/audio/<id>` | 該筆逐字稿的原始錄音(FLAC),沒有則 404 |
+| `GET` | `/api/storage` | 錄音用掉多少空間:逐日檔數與大小、總量、磁碟剩餘 |
+| `POST` | `/api/storage/delete` | 刪除某日之前的錄音,`{"before":"2026-08-01"}` |
 | `GET` | `/video_frame` | 單張 webcam JPEG(沒鏡頭時 404) |
 
 即時結果從 WebSocket(`ws://<IP>:8016`)推送,訊息是 JSON,`type` 有三種:
@@ -229,6 +243,19 @@ curl -sS -o meeting.srt "localhost:8014/api/jobs/$JOB/download?ext=srt"
 | `status` | 目前狀態(`LISTENING` / `TRANSCRIBING` 等)與音壓值 |
 | `transcription` | 一段語音轉寫完成,含文字、時間與長度 |
 | `frame` | webcam 影格(沒鏡頭或 `CAMERA_ENABLED=0` 時不會出現) |
+
+#### 留存與回放
+
+每段轉寫都會寫進 `history.jsonl`,所以重開服務不會清空;聽寫台上的 **HISTORY**
+按鈕就是讀這份。同一段語音另外以 FLAC 存一份(無損,約 wav 的四成),每個泡泡右邊
+的播放鍵放的就是它 —— 讀到的文字是 ASR 的判讀,按下去聽到的才是當時真正的聲音。
+本功能之前的舊紀錄沒有對應音檔,按鍵會呈現反灰。
+
+錄音**不會自己過期**。空間夠大的機器就該全部留著,所以刪除的決定權交給人:
+**STORAGE** 按鈕會列出逐日用量與磁碟剩餘,並提供「刪除某日之前」。刪除以整個日期
+目錄為單位,而且只刪音檔,逐字稿一律保留。
+
+`history.jsonl` 本身則會輪替(見下方設定),不會無限長大。
 
 啟動前建議先校正 VAD 門檻,否則會一直誤觸發或完全不觸發:
 
@@ -252,6 +279,23 @@ python3 -m breeze_hub.calibrate
 - 兩個檔案都不存在時,專案仍然可以用預設值啟動。
 
 換硬體之後重跑一次 `scripts/probe_hardware.sh`,其他部分會自己跟上。
+
+### 留存相關設定
+
+| 設定 | 預設 | 說明 |
+| --- | --- | --- |
+| `HISTORY_PATH` | `var/history.jsonl` | 逐字稿留存檔。刻意不放在 `WORK_DIR` 底下 —— 那裡是隨時可清的暫存 |
+| `HISTORY_MAX_BYTES` | `5242880`(5 MB) | 超過就輪替成 `.1`、`.2`…… |
+| `HISTORY_KEEP` | `3` | 保留幾代舊檔;設 `0` 表示輪替時直接丟棄 |
+| `AUDIO_ENABLED` | `true` | 關掉就不錄音,逐字稿照常 |
+| `AUDIO_DIR` | `var/audio` | 錄音位置,底下一天一個目錄 |
+
+錄音會持續累積,**根目錄不寬裕的機器請把 `AUDIO_DIR` 指到大的磁碟**。例如 Jetson
+的根目錄只有 28 GB,就在 `.env` 指到 SD 卡:
+
+```bash
+AUDIO_DIR=/media/nvidia/sd/breeze-asr-audio
+```
 
 ### 能力矩陣與降級
 
@@ -303,7 +347,10 @@ breeze-asr-hub/
 │   ├── run.sh               前景執行
 │   └── service.sh           systemd 生命週期管理
 ├── deploy/                  systemd unit 樣板
-└── docs/                    架構、硬體、排錯
+├── docs/                    架構、硬體、排錯
+└── var/                     執行時產生,不進版控
+    ├── history.jsonl        逐字稿留存(會輪替)
+    └── audio/YYYY-MM-DD/    錄音,檔名是該筆逐字稿的 id
 ```
 
 即時聽寫台的前端沒有任何 CDN 依賴,也沒有 build step,離線機器直接可用。
