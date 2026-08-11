@@ -157,7 +157,7 @@ def asr_worker():
             # before the current process started. Best effort: a full disk must
             # not take the transcription down with it.
             try:
-                history_path = config.WORK_DIR / "history.jsonl"
+                history_path = config.HISTORY_PATH
                 with open(history_path, "a", encoding="utf-8") as f:
                     f.write(json.dumps(entry, ensure_ascii=False) + "\n")
             except OSError:
@@ -365,7 +365,7 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         elif path == "/api/history":
             # Newest first, to match /api/transcriptions and the feed order.
             history_data = []
-            history_path = config.WORK_DIR / "history.jsonl"
+            history_path = config.HISTORY_PATH
             if history_path.exists():
                 try:
                     with open(history_path, "r", encoding="utf-8") as f:

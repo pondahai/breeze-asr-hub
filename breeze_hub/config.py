@@ -199,6 +199,10 @@ VAD_MIN_SPEECH_SEC = _float("VAD_MIN_SPEECH_SEC", 0.8)
 VAD_MAX_SPEECH_SEC = _float("VAD_MAX_SPEECH_SEC", 10.0)
 VAD_MAX_HISTORY = _int("VAD_MAX_HISTORY", 200)
 
+# The durable transcription log. Deliberately not under WORK_DIR: that holds
+# scratch wavs that anything is free to clean out.
+HISTORY_PATH = _path("HISTORY_PATH", "var/history.jsonl")
+
 # --- Camera -----------------------------------------------------------------
 
 CAMERA_ENABLED = _bool("CAMERA_ENABLED", True)
@@ -235,7 +239,8 @@ def capability(name, default=False):
 
 
 def ensure_dirs():
-    for directory in (UPLOAD_DIR, RESULT_DIR, LOG_DIR, WORK_DIR):
+    for directory in (UPLOAD_DIR, RESULT_DIR, LOG_DIR, WORK_DIR,
+                      HISTORY_PATH.parent):
         directory.mkdir(parents=True, exist_ok=True)
 
 
