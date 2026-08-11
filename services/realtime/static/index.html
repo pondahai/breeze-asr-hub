@@ -283,6 +283,14 @@
       margin: auto 0;
       font-size: 0.9rem;
     }
+
+    .modal { display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.8); }
+    .modal-content { background-color: var(--card-bg); margin: 5% auto; padding: 20px; border: 1px solid var(--border); width: 80%; max-width: 800px; border-radius: 16px; max-height: 80vh; display: flex; flex-direction: column; }
+    .modal-header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 12px; margin-bottom: 16px; }
+    .modal-title { font-family: 'Orbitron', sans-serif; font-size: 1.1rem; color: var(--accent); }
+    .close-btn { color: #aaa; font-size: 28px; font-weight: bold; cursor: pointer; }
+    .close-btn:hover { color: #fff; }
+    .history-list { overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
   </style>
 </head>
 <body>
@@ -345,6 +353,7 @@
         <div class="feed-header">
           <span class="feed-title">REAL-TIME TRANSCRIPTIONS</span>
           <div class="feed-actions">
+            <button class="btn" onclick="fetchHistory()">HISTORY</button>
             <button class="btn" onclick="copyAllText()">COPY ALL</button>
             <button class="btn" onclick="clearFeed()">CLEAR</button>
           </div>
@@ -357,6 +366,17 @@
 
     </div>
 
+  </div>
+
+  <!-- History Modal -->
+  <div id="historyModal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <span class="modal-title">TRANSCRIPTION HISTORY</span>
+        <span class="close-btn" onclick="document.getElementById('historyModal').style.display='none'">&times;</span>
+      </div>
+      <div class="history-list" id="historyList">Loading...</div>
+    </div>
   </div>
 
   <script>
@@ -565,6 +585,23 @@
       if (texts.length === 0) return alert('No text to copy');
       var nl = String.fromCharCode(10);
       navigator.clipboard.writeText(texts.join(nl)).then(function() { alert('Copied all text to clipboard'); });
+    }
+
+    async function fetchHistory() {
+      document.getElementById('historyModal').style.display = 'block';
+      document.getElementById('historyList').innerHTML = '<div class="empty-tip">Loading...</div>';
+      try {
+        var res = await fetch('/api/history');
+        var data = await res.json();
+        var html = '';
+        data.forEach(function(item) {
+          html += '<div class="msg-bubble"><div class="msg-meta"><span>TIME: ' + item.time + '</span><span>DUR: ' + item.duration + 's</span></div><div class="msg-text">' + escapeHtml(item.text) + '</div></div>';
+        });
+        if (data.length === 0) html = '<div class="empty-tip">No history found.</div>';
+        document.getElementById('historyList').innerHTML = html;
+      } catch (e) {
+        document.getElementById('historyList').innerHTML = '<div class="empty-tip">Error loading history.</div>';
+      }
     }
 
     // Ask the server what this box actually supports, then connect. If the
