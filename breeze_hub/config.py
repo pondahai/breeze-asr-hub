@@ -197,9 +197,18 @@ FRAME_DURATION_SEC = _float("FRAME_DURATION_SEC", 0.1)
 # new microphone rather than guessing.
 
 VAD_NOISE_THRESHOLD = _int("VAD_NOISE_THRESHOLD", HARDWARE.get("vad_noise_threshold") or 1200)
-VAD_SILENCE_DURATION_SEC = _float("VAD_SILENCE_DURATION_SEC", 0.6)
+# Hysteresis: crossing ENTER starts a segment, but once speaking it takes a drop
+# below CONTINUE to count as silence. A single threshold cuts mid-sentence,
+# because unstressed syllables and the gaps between words sit far below the
+# level of the onset that opened the segment.
+VAD_ENTER_THRESHOLD = _int("VAD_ENTER_THRESHOLD", VAD_NOISE_THRESHOLD)
+VAD_CONTINUE_THRESHOLD = _int("VAD_CONTINUE_THRESHOLD", int(VAD_ENTER_THRESHOLD * 0.6))
+# Audio kept from before the onset, so the segment does not start already
+# clipped into the first consonant.
+VAD_PREROLL_SEC = _float("VAD_PREROLL_SEC", 0.3)
+VAD_SILENCE_DURATION_SEC = _float("VAD_SILENCE_DURATION_SEC", 1.0)
 VAD_MIN_SPEECH_SEC = _float("VAD_MIN_SPEECH_SEC", 0.8)
-VAD_MAX_SPEECH_SEC = _float("VAD_MAX_SPEECH_SEC", 10.0)
+VAD_MAX_SPEECH_SEC = _float("VAD_MAX_SPEECH_SEC", 15.0)
 VAD_MAX_HISTORY = _int("VAD_MAX_HISTORY", 200)
 
 # The durable transcription log. Deliberately not under WORK_DIR: that holds

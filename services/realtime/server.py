@@ -15,6 +15,7 @@ build step, so it works on an air-gapped edge box.
 """
 
 import asyncio
+import collections
 import json
 import os
 import pathlib
@@ -364,7 +365,11 @@ def vad_loop():
     speaking = False
     speech = bytearray()
     silent_frames = 0
-    max_silent_frames = int(config.VAD_SILENCE_DURATION_SEC / config.FRAME_DURATION_SEC)
+    # round(), not int(): 0.3 / 0.1 is 2.9999999999999996 in binary floating
+    # point, and truncating it quietly drops a frame from each window.
+    max_silent_frames = int(round(config.VAD_SILENCE_DURATION_SEC / config.FRAME_DURATION_SEC))
+    preroll = collections.deque(
+        maxlen=max(1, int(round(config.VAD_PREROLL_SEC / config.FRAME_DURATION_SEC))))
     counter = 0
 
     while True:
@@ -388,15 +393,21 @@ def vad_loop():
             "pcm": base64.b64encode(frame).decode("ascii"),
         })
 
-        if rms > config.VAD_NOISE_THRESHOLD:
+        # Hysteresis: it takes ENTER to open a segment, but only CONTINUE to hold
+        # it open, so the quiet syllables in the middle of a sentence do not read
+        # as silence and cut the segment after the first word.
+        if rms > (config.VAD_CONTINUE_THRESHOLD if speaking else config.VAD_ENTER_THRESHOLD):
             if not speaking:
                 speaking = True
                 state["status"] = "RECORDING"
+                speech.extend(b"".join(preroll))
+                preroll.clear()
             speech.extend(frame)
             silent_frames = 0
             continue
 
         if not speaking:
+            preroll.append(frame)
             continue
 
         speech.extend(frame)
@@ -415,6 +426,7 @@ def vad_loop():
                 state["status"] = "LISTENING"
             speech = bytearray()
             silent_frames = 0
+            preroll.clear()
 
 
 # --------------------------------------------------------------------------
@@ -552,7 +564,8 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 "ws_port": config.REALTIME_WS_PORT,
                 "camera": camera.available,
                 "device": state["device"],
-                "threshold": config.VAD_NOISE_THRESHOLD,
+                "threshold": config.VAD_ENTER_THRESHOLD,
+                "continue_threshold": config.VAD_CONTINUE_THRESHOLD,
                 "sample_rate": config.SAMPLE_RATE,
                 "accelerator": config.HARDWARE.get("accelerator", "unknown"),
                 "model": current_model()[0],
@@ -678,7 +691,10 @@ def main():
     print(config.describe())
     print("  console      : http://{}:{}".format(config.HOST, config.REALTIME_HTTP_PORT))
     print("  websocket    : ws://{}:{}".format(config.HOST, config.REALTIME_WS_PORT))
-    print("  vad threshold: {} (raw int16 RMS)".format(config.VAD_NOISE_THRESHOLD))
+    print("  vad threshold: enter {} / continue {} (raw int16 RMS)".format(
+        config.VAD_ENTER_THRESHOLD, config.VAD_CONTINUE_THRESHOLD))
+    print("  vad timing   : {}s preroll, cut after {}s silence, {}s max".format(
+        config.VAD_PREROLL_SEC, config.VAD_SILENCE_DURATION_SEC, config.VAD_MAX_SPEECH_SEC))
     print("=" * 60)
 
     ThreadedHTTPServer((config.HOST, config.REALTIME_HTTP_PORT), ConsoleHandler).serve_forever()
