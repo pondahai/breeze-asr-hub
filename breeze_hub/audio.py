@@ -11,7 +11,17 @@ import struct
 import subprocess
 import time
 
+try:
+    import numpy as np
+    import scipy.signal
+    _HAVE_SCIPY = True
+except ImportError:
+    np = None
+    scipy = None
+    _HAVE_SCIPY = False
+
 from . import config
+
 
 
 def _run(cmd):
@@ -149,3 +159,60 @@ def wav_bytes(pcm_data, sample_rate=None):
 def write_wav(path, pcm_data, sample_rate=None):
     with open(str(path), "wb") as handle:
         handle.write(wav_bytes(pcm_data, sample_rate))
+
+
+def enhance_pcm_bytes(pcm_data, sample_rate=None):
+    """Enhance raw 16-bit PCM bytes using DSP filtering, vocal boost, AGC and normalization.
+
+    Gracefully falls back to raw data if an error occurs or scipy is unavailable.
+    """
+    if not pcm_data:
+        return pcm_data
+
+    sample_rate = sample_rate or config.SAMPLE_RATE
+    if not _HAVE_SCIPY:
+        return pcm_data
+
+    try:
+        # Unpack int16 PCM to float32 (-1.0 to 1.0)
+        audio = np.frombuffer(pcm_data, dtype=np.int16).astype(np.float32) / 32768.0
+        if len(audio) == 0:
+            return pcm_data
+
+
+        nyq = 0.5 * sample_rate
+        highpass_hz = getattr(config, "DSP_HIGHPASS_HZ", 80.0)
+        lowpass_hz = getattr(config, "DSP_LOWPASS_HZ", 7500.0)
+        low = max(10.0, highpass_hz) / nyq
+        high = min(lowpass_hz / nyq, 0.99)
+
+        # 1. 4th-order Butterworth Bandpass filter (remove hum/rumble + high hiss)
+        b, a = scipy.signal.butter(4, [low, high], btype="band")
+        filtered = scipy.signal.filtfilt(b, a, audio)
+
+        # 2. Vocal Formant Peaking Filter (~2.5kHz clarity boost)
+        fc = min(2500.0 / nyq, 0.95)
+        b_eq, a_eq = scipy.signal.iirpeak(fc, 1.5)
+        enhanced = filtered + 0.35 * scipy.signal.filtfilt(b_eq, a_eq, filtered)
+
+        # 3. Soft AGC / Dynamic Compressor
+        rms = np.sqrt(np.mean(enhanced**2) + 1e-8)
+        target_rms = getattr(config, "DSP_AGC_TARGET_RMS", 0.12)
+        gain = min(target_rms / (rms + 1e-6), 6.0)
+        compressed = enhanced * gain
+        compressed = np.tanh(compressed * 1.1) / 1.1
+
+        # 4. Peak Normalization to -1.0 dBFS (0.89 max amplitude)
+        target_peak = 10.0 ** (getattr(config, "DSP_PEAK_NORM_DBFS", -1.0) / 20.0) # ~0.891
+        peak = np.max(np.abs(compressed))
+        if peak > 1e-5:
+            compressed = compressed * (target_peak / peak)
+
+        # Pack back to int16 bytes
+        int16_samples = np.clip(compressed * 32767.0, -32768.0, 32767.0).astype(np.int16)
+        return int16_samples.tobytes()
+
+    except Exception:
+        # Fallback without crashing
+        return pcm_data
+

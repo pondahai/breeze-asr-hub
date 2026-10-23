@@ -263,6 +263,32 @@ def delete_audio_before(date_str):
             "freed_bytes": freed_bytes}
 
 
+def transcribe_once(model, wav_path):
+    """One whisper-cli run; returns the text, or "" on failure."""
+    cmd = [
+        str(config.WHISPER_CLI),
+        "-m", str(model),
+        "-f", str(wav_path),
+        "-l", config.ASR_LANGUAGE,
+        "-t", str(config.ASR_THREADS),
+        "--no-timestamps",
+        "-nt",
+    ]
+    try:
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        text = result.stdout.decode("utf-8", "replace").strip()
+        if result.returncode != 0 and not text:
+            print("[asr] whisper-cli exited {}: {}".format(
+                result.returncode,
+                result.stderr.decode("utf-8", "replace").strip()[-300:],
+            ))
+            return ""
+        return text
+    except OSError as exc:
+        print("[asr] cannot run {}: {}".format(config.WHISPER_CLI, exc))
+        return ""
+
+
 def asr_worker():
     while True:
         item = asr_queue.get()
@@ -272,28 +298,24 @@ def asr_worker():
 
         set_status("TRANSCRIBING")
         started = time.time()
-        _, model = current_model()
-        cmd = [
-            str(config.WHISPER_CLI),
-            "-m", str(model),
-            "-f", str(wav_path),
-            "-l", config.ASR_LANGUAGE,
-            "-t", str(config.ASR_THREADS),
-            "--no-timestamps",
-            "-nt",
-        ]
-        try:
-            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            text = result.stdout.decode("utf-8", "replace").strip()
-            if result.returncode != 0 and not text:
-                text = ""
-                print("[asr] whisper-cli exited {}: {}".format(
-                    result.returncode,
-                    result.stderr.decode("utf-8", "replace").strip()[-300:],
-                ))
-        except OSError as exc:
-            print("[asr] cannot run {}: {}".format(config.WHISPER_CLI, exc))
-            text = ""
+        variant, model = current_model()
+        # 比較模式：同一段語音逐一跑每個已轉好的版本；目前選用的版本排第一、當主要結果
+        runs = [(variant, model)]
+        for v in config.ASR_COMPARE_VARIANTS:
+            try:
+                p = config.model_path(v)
+            except KeyError:
+                continue
+            if v != variant and p.exists():
+                runs.append((v, p))
+        if variant not in config.ASR_COMPARE_VARIANTS or len(runs) < 2:
+            runs = runs[:1]
+        compare = []
+        for v, m in runs:
+            t0 = time.time()
+            compare.append({"model": v, "text": transcribe_once(m, wav_path),
+                            "time": round(time.time() - t0, 2)})
+        text = compare[0]["text"] or next((c["text"] for c in compare if c["text"]), "")
 
         elapsed = time.time() - started
 
@@ -305,7 +327,10 @@ def asr_worker():
                 "text": text,
                 "duration": round(duration, 1),
                 "cuda_time": round(elapsed, 2),
+                "model": variant,
             }
+            if len(compare) > 1:
+                entry["compare"] = compare
             entry["audio"] = save_audio(entry["id"], wav_path)
             state["transcriptions"].insert(0, entry)
             del state["transcriptions"][config.VAD_MAX_HISTORY:]
@@ -383,7 +408,8 @@ def vad_loop():
             if duration >= config.VAD_MIN_SPEECH_SEC:
                 counter += 1
                 wav_path = config.WORK_DIR / "segment_{}_{}.wav".format(counter, int(time.time()))
-                audio.write_wav(wav_path, speech)
+                speech_to_write = audio.enhance_pcm_bytes(speech, config.SAMPLE_RATE) if getattr(config, "DSP_ENHANCE_ENABLED", True) else speech
+                audio.write_wav(wav_path, speech_to_write)
                 asr_queue.put((wav_path, duration))
             else:
                 state["status"] = "LISTENING"

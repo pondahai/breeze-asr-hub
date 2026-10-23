@@ -60,15 +60,17 @@ def split_audio(file_path, splits, out_dir, base_name):
     out_dir = pathlib.Path(out_dir)
     for i, (start, end) in enumerate(splits):
         out_path = out_dir / f"{base_name}_{i:03d}.wav"
-        # Convert to 16kHz 16-bit mono wav for optimal whisper.cpp compatibility
+        # Convert to 16kHz 16-bit mono wav with DSP speech enhancement filters
         cmd = [
             'ffmpeg', '-y', '-i', str(file_path),
             '-ss', str(start), '-to', str(end),
+            '-af', 'highpass=f=80,lowpass=f=7500,equalizer=f=2500:t=q:w=1.5:g=3,loudnorm=I=-16:TP=-1.0:LRA=11',
             '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le',
             str(out_path)
         ]
         subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         segment_paths.append((out_path, start))
+
     return segment_paths
 
 def parse_time(time_str, is_srt):

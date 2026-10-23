@@ -296,6 +296,11 @@
        hugging the right edge of the bubble. */
     .msg-row { display: flex; align-items: flex-start; gap: 10px; }
     .msg-row .msg-text { flex: 1; }
+    .cmp-list { flex: 1; display: flex; flex-direction: column; gap: 6px; }
+    .cmp-row { display: flex; gap: 8px; align-items: baseline; }
+    .cmp-tag { font-size: 11px; opacity: 0.7; min-width: 22px; }
+    .cmp-time { font-size: 11px; opacity: 0.5; white-space: nowrap; }
+    .cmp-alt { flex: 1; opacity: 0.75; }
     .play-btn {
       flex: none; width: 34px; height: 34px; border-radius: 50%;
       border: 1px solid var(--border); background: rgba(0, 240, 255, 0.08);
@@ -609,12 +614,21 @@
       meterFill.style.width = pct + '%';
     }
 
+    // 比較模式：每個 Breeze 版本一行（主要版本用 .msg-text，「全部複製」只取它）
+    function textBlock(item) {
+      if (!item.compare || item.compare.length < 2) return '<div class="msg-text">' + escapeHtml(item.text) + '</div>';
+      return '<div class="cmp-list">' + item.compare.map(function(c, i) {
+        return '<div class="cmp-row"><span class="cmp-tag">' + escapeHtml(c.model) + '</span><span class="' + (i === 0 ? 'msg-text' : 'cmp-alt') + '">' +
+          escapeHtml(c.text || '（無結果）') + '</span><span class="cmp-time">' + c.time + 's</span></div>';
+      }).join('') + '</div>';
+    }
+
     function addTranscription(item) {
       if (emptyTip) emptyTip.style.display = 'none';
 
       var bubble = document.createElement('div');
       bubble.className = 'msg-bubble';
-      bubble.innerHTML = '<div class="msg-meta"><span>TIME: ' + item.time + '</span><span>AUDIO DURATION: ' + item.duration + 's</span><span>CUDA TIME: ' + item.cuda_time + 's</span></div><div class="msg-row"><div class="msg-text">' + escapeHtml(item.text) + '</div>' + playButton(item) + '</div>';
+      bubble.innerHTML = '<div class="msg-meta"><span>TIME: ' + item.time + '</span><span>AUDIO DURATION: ' + item.duration + 's</span><span>CUDA TIME: ' + item.cuda_time + 's</span></div><div class="msg-row">' + textBlock(item) + playButton(item) + '</div>';
       feedList.insertBefore(bubble, feedList.firstChild);
     }
 
@@ -755,7 +769,7 @@
         var data = await res.json();
         var html = '';
         data.forEach(function(item) {
-          html += '<div class="msg-bubble"><div class="msg-meta"><span>TIME: ' + item.time + '</span><span>DUR: ' + item.duration + 's</span></div><div class="msg-row"><div class="msg-text">' + escapeHtml(item.text) + '</div>' + playButton(item) + '</div></div>';
+          html += '<div class="msg-bubble"><div class="msg-meta"><span>TIME: ' + item.time + '</span><span>DUR: ' + item.duration + 's</span></div><div class="msg-row">' + textBlock(item) + playButton(item) + '</div></div>';
         });
         if (data.length === 0) html = '<div class="empty-tip">No history found.</div>';
         document.getElementById('historyList').innerHTML = html;

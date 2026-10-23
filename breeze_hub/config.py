@@ -166,6 +166,9 @@ MODEL_HF_REPO = _str("MODEL_HF_REPO", MODEL_VARIANTS[MODEL_VARIANT]["repo"]
                      if MODEL_VARIANT in MODEL_VARIANTS else "MediaTek-Research/Breeze-ASR-25")
 MODEL_HF_REVISION = _str("MODEL_HF_REVISION", "main")
 ASR_LANGUAGE = _str("ASR_LANGUAGE", "zh")
+# 即時聽寫每段語音逐一跑這些 Breeze 版本並全部記錄，方便比較（逗號分隔；空字串＝只跑目前選用的版本）。
+# 少於兩個已轉好的模型時自動退回單一模型。
+ASR_COMPARE_VARIANTS = [v.strip() for v in _str("ASR_COMPARE_VARIANTS", "25,26").split(",") if v.strip()]
 ASR_THREADS = _int("ASR_THREADS", HARDWARE.get("cpu_cores") or 4)
 
 # --- Network ----------------------------------------------------------------
@@ -215,6 +218,15 @@ HISTORY_KEEP = _int("HISTORY_KEEP", 3)
 # hands to whoever is looking at it.
 AUDIO_ENABLED = _bool("AUDIO_ENABLED", True)
 AUDIO_DIR = _path("AUDIO_DIR", "var/audio")
+
+# --- DSP Speech Enhancement -------------------------------------------------
+
+DSP_ENHANCE_ENABLED = _bool("DSP_ENHANCE_ENABLED", True)
+DSP_HIGHPASS_HZ = _float("DSP_HIGHPASS_HZ", 80.0)
+DSP_LOWPASS_HZ = _float("DSP_LOWPASS_HZ", 7500.0)
+DSP_PEAK_NORM_DBFS = _float("DSP_PEAK_NORM_DBFS", -1.0)
+DSP_AGC_TARGET_RMS = _float("DSP_AGC_TARGET_RMS", 0.12)
+
 
 # --- Camera -----------------------------------------------------------------
 
