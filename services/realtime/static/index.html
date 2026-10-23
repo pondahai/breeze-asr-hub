@@ -294,6 +294,12 @@
 
     /* Transcription text and its play button sit on one row, the button
        hugging the right edge of the bubble. */
+    .gain-row {
+      display: flex; align-items: center; gap: 8px; margin-top: 8px;
+      font-size: 11px; color: var(--text-sub);
+    }
+    .gain-row input { flex: 1; min-width: 0; accent-color: var(--green); }
+    .gain-row #monitorGainVal { min-width: 38px; text-align: right; }
     .msg-row { display: flex; align-items: flex-start; gap: 10px; }
     .msg-row .msg-text { flex: 1; }
     .cmp-list { flex: 1; display: flex; flex-direction: column; gap: 6px; }
@@ -356,6 +362,12 @@
         <button class="btn-toggle" id="btnAudioToggle" onclick="toggleAudioMonitor()">
           ENABLE AUDIO MONITOR
         </button>
+        <div class="gain-row">
+          <span>VOLUME</span>
+          <input type="range" id="monitorGain" min="1" max="32" step="0.5" value="8"
+                 oninput="setMonitorGain(this.value)">
+          <span id="monitorGainVal">8.0x</span>
+        </div>
       </div>
 
       <div class="control-card">
@@ -457,6 +469,28 @@
     // Web Audio API State
     var audioCtx = null;
     var nextAudioTime = 0;
+    var monitorGainNode = null;
+    var monitorLimiter = null;
+    // The monitor stream is the raw mic frame, before any of the DSP the ASR
+    // path gets: speech sits around 4% of full scale (-28 dBFS), which is why
+    // monitoring it unamplified means turning the whole machine up. Everything
+    // goes through a gain node and then a limiter, so a high setting gets loud
+    // without the peaks turning into digital clipping.
+    var monitorGain = parseFloat(localStorage.getItem('monitorGain') || '8');
+
+    // Reflect the stored gain on the slider before the first frame arrives.
+    function initMonitorGain() {
+      var slider = document.getElementById('monitorGain');
+      if (slider) slider.value = String(monitorGain);
+      setMonitorGain(monitorGain);
+    }
+
+    function setMonitorGain(value) {
+      monitorGain = parseFloat(value) || 1;
+      document.getElementById('monitorGainVal').textContent = monitorGain.toFixed(1) + 'x';
+      try { localStorage.setItem('monitorGain', String(monitorGain)); } catch (e) {}
+      if (monitorGainNode) monitorGainNode.gain.value = monitorGain;
+    }
 
     // Filled in by /api/config before the first connect, so the console works
     // unchanged when the ports are remapped in .env or behind a proxy.
@@ -508,6 +542,16 @@
 
       if (!audioCtx) {
         audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+        monitorGainNode = audioCtx.createGain();
+        monitorGainNode.gain.value = monitorGain;
+        monitorLimiter = audioCtx.createDynamicsCompressor();
+        monitorLimiter.threshold.value = -16;
+        monitorLimiter.knee.value = 10;
+        monitorLimiter.ratio.value = 12;
+        monitorLimiter.attack.value = 0.003;
+        monitorLimiter.release.value = 0.12;
+        monitorGainNode.connect(monitorLimiter);
+        monitorLimiter.connect(audioCtx.destination);
       }
 
       if (isAudioOn) {
@@ -554,7 +598,7 @@
 
       var source = audioCtx.createBufferSource();
       source.buffer = buffer;
-      source.connect(audioCtx.destination);
+      source.connect(monitorGainNode || audioCtx.destination);
 
       if (nextAudioTime < audioCtx.currentTime) {
         nextAudioTime = audioCtx.currentTime;
@@ -777,6 +821,8 @@
         document.getElementById('historyList').innerHTML = '<div class="empty-tip">Error loading history.</div>';
       }
     }
+
+    initMonitorGain();
 
     // Ask the server what this box actually supports, then connect. If the
     // request fails we still connect using the defaults rather than dying.
